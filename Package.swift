@@ -29,6 +29,9 @@ let package = Package(
         // AppKit adapter — NSResponder chain + NSDocument helpers.
         .library(name: "DependenceAppKit", targets: ["DependenceAppKit"]),
 
+        // App Intents bridge — AppDependencyManager <-> DependencyValues.
+        .library(name: "DependenceAppIntents", targets: ["DependenceAppIntents"]),
+
         // Examples (executables — kept in-package so CI builds them).
         .executable(
             name: "ExampleSmallApp",
@@ -109,6 +112,12 @@ let package = Package(
             name: "DependenceAppKit",
             dependencies: ["Dependence"],
             path: "Sources/DependenceAppKit",
+            swiftSettings: .strict
+        ),
+        .target(
+            name: "DependenceAppIntents",
+            dependencies: ["Dependence"],
+            path: "Sources/DependenceAppIntents",
             swiftSettings: .strict
         ),
 
@@ -316,6 +325,16 @@ let package = Package(
                 "DependenceTesting",
             ],
             path: "Tests/DependenceAppKitTests",
+            swiftSettings: .strict
+        ),
+        .testTarget(
+            name: "DependenceAppIntentsTests",
+            dependencies: [
+                "Dependence",
+                "DependenceAppIntents",
+                "DependenceTesting",
+            ],
+            path: "Tests/DependenceAppIntentsTests",
             swiftSettings: .strict
         ),
         .testTarget(

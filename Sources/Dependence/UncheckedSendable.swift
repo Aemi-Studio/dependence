@@ -20,7 +20,7 @@ import Foundation
 @usableFromInline
 package struct UncheckedSendable<Value>: @unchecked Sendable {
     @usableFromInline
-    let value: Value
+    package let value: Value
 
     @inlinable
     package init(_ value: Value) {
