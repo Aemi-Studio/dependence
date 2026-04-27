@@ -1,0 +1,364 @@
+# A type-driven dependency injection system for Swift 6.2
+
+A new Swift dependency injection library can derive its compile-time correctness from the Swift type system alone — capability protocols, protocol witnesses, phantom-typed scopes, generic constructor injection, and `~Copyable` scope tokens — with macros relegated strictly to ergonomic boilerplate elimination. **This abandons the SafeDI/Needle premise that compile-time graph validation requires a SwiftSyntax-walking analyzer or external CLI codegen.** The trade-off is honest: you cannot prove "the user forgot to register Foo *anywhere* in the program" without whole-program analysis. You can, however, surface every other DI failure mode — wrong scope, missing capability, wrong type, leaked instance, isolation violation — as one of three actionable Swift compiler diagnostics: `missing_argument_for_parameter`, `type_does_not_conform_to_protocol`, or `cannot_convert_argument_value`. That is the highest signal-to-noise ratio Swift's compiler is capable of producing, and it is reachable today in pure Swift 6.2 with strict concurrency, no SwiftSyntax codegen, and full library-evolution compatibility.
+
+The prior research established the field. This report extends it: it specifies the architectural shape, names the trade-offs the prior survey deferred, and resolves the six open questions. Section 17 contains the concrete API sketch and naming proposal; Sections 1–16 build the case for it.
+
+## 1. Executive summary and recommended architectural shape
+
+The recommended library — provisionally named **Stitch** for module-name reasons articulated in Section 14 — combines five type-system techniques into a stack where each layer fills a hole the others leave open.
+
+**Layer 1, the foundation, is the capabilities pattern.** One small protocol per service (`HasNetwork`, `HasDatabase`, `HasLogger`), composed at the composition root with `&`. This is the *only* technique in Swift's type system that produces genuine "graph-closed" diagnostics: a root struct that fails to provide an aspect surfaces "type does not conform to 'HasLogger'" with a stub fix-it. Every function declares its needs via `<E: HasNetwork & HasLogger>` constraints; the compiler accumulates requirements purely structurally — Haskell's `MonadReader` + `Has*` typeclass pattern, transliterated.
+
+**Layer 2 is protocol witnesses.** Each capability's underlying service is a `Sendable` struct of closures, not a protocol with associated types. Forgetting a method is a `missing_argument_for_parameter` error at the witness's struct initializer — the strongest possible "you forgot something" diagnostic Swift can produce. Live, preview, and test implementations are first-class values that compose with `var` mutation. `@DependencyClient`-style macros generate these structs from a protocol declaration as ergonomic sugar; the safety remains in the type system.
+
+**Layer 3 is phantom-typed scope containers.** `Container<AppScope>`, `Container<UserScope>`, `Container<RequestScope>` with a `Scope.Parent` self-rooted associated type for hierarchy. Cross-scope leaks become `cannot_convert_argument_value` errors. Combined with **isolated conformances (SE-0470)**, MainActor-only services are enforced at compile time — essential for SwiftUI/iOS 26 where most UI services are `@MainActor`-pinned by default.
+
+**Layer 4 is generic constructor injection.** Each service is parameterized over its required peers: `struct AuthService<Net: NetworkClient, Log: LoggerWitness>`. Construction without a required peer is a missing-argument error at the most actionable site possible. Reach for parameter packs (SE-0393, SE-0398/0399/0408) only when the dependency list is genuinely variadic at the user's call site; for typical 1–6 dependency cases, plain generic parameters produce far better diagnostics.
+
+**Layer 5 is `~Copyable` scope tokens (SE-0390) for one-shot resources.** A request-scoped or test-override scope is non-Copyable; the compiler enforces single-use and automatic teardown via `deinit`. This is the *only* Swift technique that gives genuine "you cannot leak this scope" enforcement, and it is the right answer to the "generational dependencies" question (post-login `User`, per-request cache) that swift-dependencies has historically punted on.
+
+Above all five sits **`@TaskLocal` for ambient scope**, the only structurally sound primitive Swift provides for cross-cutting context that survives structured concurrency. The library uses TaskLocal for override propagation and SwiftUI `@Environment` integration for the view tree, with explicit, documented bridges between the two — never inventing a parallel mechanism.
+
+**Macros are strictly optional.** A separate `StitchMacros` SPM product provides `@DependencyEntry` (collapses key + accessor declaration), `@Witness` (synthesizes the struct-of-closures from a protocol), and `@Capabilities` (generates per-aspect protocol conformances on a composition root). The core `Stitch` product has no SwiftSyntax dependency and pays no macro build-time tax. This is how a 2026-era library acknowledges the SwiftSyntax tax without making it load-bearing.
+
+## 2. Theoretical foundations the prior report under-stated
+
+Three theoretical observations sharpen the design space.
+
+**Swift cannot prove "graph closure" without external analysis.** The type system has no way to inspect the closed world of a program — no equivalent of Scala's `summon`, Haskell's instance resolution, or Dagger's `@Component` scan. The capability protocol pattern gets you closest: when the *root* struct conforms to all required `HasX` aspects, the compiler enforces completeness *for that root*. But there is no way to enforce that some *other* root, in some other module, has not declared an incomplete capability. SafeDI and Needle escape this by running an analyzer over every source file. **Pure-type-system DI accepts the trade and substitutes per-call-site safety for whole-program safety.** That is a genuine concession, and the library should be honest about it in marketing materials.
+
+**Diagnostic quality tracks how close the failed constraint is to the user's call site.** The reason capability protocols + witnesses + constructor injection win over parameter-pack-encoded HLists or Reader monads is not theoretical purity — it is that the failed constraint surfaces *at the line the user just typed*. Pack-based encodings push failures deep into a substitution trace; users see "`(repeat each P) == (A, B, C)`" walls that no engineer can act on. The five-layer stack above was selected to keep every failure within one syntactic step of its cause.
+
+**KeyPath safety is narrower than libraries claim.** Factory's marketing says "code simply will not compile" without a registration. This is true only in the sense that referencing a non-existent property typo'd in a key path fails to type-check. KeyPath proves a property *exists* on `Container`; it does not prove the container's *value* at that path is real, registered, or non-`fatalError`-bodied. Treat KeyPath as the user-facing sugar layer over capability protocols + witnesses, not as the safety story itself.
+
+## 3. The full landscape of compile-time DI techniques in Swift
+
+Eighteen techniques in Swift 6.2 can contribute to compile-time DI; only five belong in the recommended stack. The full landscape, ordered roughly by ROI:
+
+**Capabilities pattern (recommended, foundation).** `protocol HasLogger { var logger: any Logger { get } }`, one per service, composed at the composition root: `struct AppEnvironment: HasLogger, HasDatabase, HasNetwork { … }`. A function that needs both surfaces it via `where E: HasLogger & HasDatabase`. The compiler enforces accumulation structurally; missing-aspect failures arrive with a clear "type does not conform" diagnostic and a fix-it stub. The downside is that capability conformances are *open* — anyone in any module can add `extension Foo: HasNetwork`, and last conformance wins under disagreement. Mitigated by convention: each capability's protocol lives in exactly one interface module, with conformance only at the composition root.
+
+**Protocol witnesses (recommended, layer 2).** A `Sendable` struct of closures replaces a protocol with methods. `AuthServiceWitness(login: { ... }, logout: { ... }, current: { ... })` is the canonical shape. Construction without `logout` produces `missing_argument_for_parameter` — exactly the error a DI library wants. Sendable correctness is enforced per-closure. Witnesses compose by `var` mutation, ideal for `unimplemented` defaults plus targeted test overrides. The cost is verbosity at the registration site; macros are excellent at solving this. The Point-Free episodes 33–36 establish the pattern.
+
+**Phantom-typed scope tagging (recommended, layer 3).** `Container<AppScope>`, `Container<RequestScope>`, with an associated `Scope.Parent` for hierarchy. Cross-scope leak attempts become `cannot_convert_argument_value` errors. The brand-type pattern from `pointfreeco/swift-tagged` is the precedent. Phantom types are erased at runtime, so `unsafeBitCast` defeats them; this rarely matters under strict concurrency.
+
+**Generic constructor injection (recommended, layer 4).** `struct AuthService<Net: NetworkClient, Log: LoggerWitness>` with all dependencies in `init`. This is plain Swift, the diagnostic story is best-in-class, and the encoding works under library evolution. Avoid escalating to parameter packs unless arity is genuinely variadic.
+
+**Non-copyable scope tokens (recommended, layer 5).** `struct ScopeToken<S: Scope>: ~Copyable, Sendable` with `consuming func resolve` and `deinit` cleanup. Use-after-consume is a `noncopyable_use_after_consume` Sema error; copying is forbidden by the type system. This is the *only* technique that statically forbids double-use of a scope and guarantees cleanup. Useful for request scopes, test override scopes, and the post-login user scope.
+
+**Isolated conformances (SE-0470, complementary).** `class ImageCache: @MainActor CacheService` makes the conformance unusable from non-isolated contexts. Essential for SwiftUI/iOS 26 where most UI services are `@MainActor`. The library should adopt the `InferIsolatedConformances` upcoming feature.
+
+**Primary associated types (SE-0346, complementary).** `any Repository<User>` constrains the existential's element type. Cleanest existential ergonomics in Swift 6.2; useful for "any service that produces this entity" patterns.
+
+**Typed throws (SE-0413, complementary).** Use *internally* — `throws(ResolutionError)` on private resolution APIs gives exhaustive `catch` checking at internal call sites. Use *publicly* with caution: typed throws lock the API surface; adding a case is source-breaking.
+
+**KeyPath as compile-time keys (cosmetic).** `\.apiClient` autocomplete and refactor-safety are real benefits. SE-0438 inferred sendability makes this work cleanly under strict concurrency. But the safety story it carries is narrow (the property exists), not deep (the value is registered). Use as the user-facing sugar layer.
+
+**Capabilities-via-tuple-types and HLists.** Tuples-as-type-level-lists (`associatedtype Provided = (Auth, Net, Logger)`) and parameter-pack HLists give you order-tracking but not member-queryability. Lower the lift to protocol-aspects (the first technique above) for actual safety.
+
+**Reader monad / environment passing.** Theoretically the cleanest closed-graph proof — every requirement composes upward, and the *root* `run(realEnv)` is the only place satisfaction can fail — but Swift lacks do-notation, HKTs, and implicit-parameter resolution, so the result is unidiomatic. Skip; lean on capability protocols and `@TaskLocal` instead.
+
+**`@Entry` / SwiftUI EnvironmentKey approach (anti-pattern for completeness).** EnvironmentKey *requires* a `defaultValue`, which structurally forecloses the "no default exists" failure mode. The library should *learn from but not copy* this design. Every reading of an unset Environment value falls through to the default; the failure mode is purely runtime.
+
+The remaining techniques — integer generic parameters (SE-0452), retroactive conformances (SE-0364), `Self`-rooted requirements — are correct but small contributions. The full encoding details, including which Sema diagnostic each technique surfaces, appear in the ranking table at the end of Section 3 of the supporting research; the recommendation summary above is the actionable extract.
+
+## 4. Cross-language survey of compile-time DI ideas portable to Swift
+
+Five non-Swift patterns map directly onto the recommended stack and are worth stealing in name as well as shape.
+
+**Haskell's ReaderT design pattern (Snoyman) is the highest-fidelity port in the survey.** "Has-typeclasses" — `class HasDbPool env where dbPoolL :: Lens' env DbPool` — translate one-to-one to Swift `protocol HasDbPool { var dbPool: DbPool { get } }`. Function signatures accumulating constraints (`(MonadReader env m, HasDbPool env, HasLogger env) => …`) become `<E: HasDbPool & HasLogger>`. Snoyman's argument that *all* mutable state should live in `IORef`/`TVar` inside the env (not in monad-transformer state stacks) maps to "all mutable state lives in `actor` or `Mutex`-locked classes referenced by the env." This is the closest functional analogue Swift offers, and it is unfortunately under-used in real Swift codebases.
+
+**Scala 3's `given`/`using` is approximated, not matched, by Swift's `some P = .default`.** `extension Logger where Self == ConsoleLogger { static var console: Self { .init() } }` plus `func work(log: some Logger = .console)` is the cleanest Swift analogue. We lose Scala's recursive instance derivation (`given [T: Ord] => Ord[List[T]]`) and the compiler's automatic search; we gain explicitness, which is arguably more Swift-idiomatic.
+
+**ZIO's `ZLayer[In, Err, Out]` has one feature Swift cannot reproduce — the compiler accumulating `R1 & R2 & R3` across call chains automatically — but the *spirit* (track requirements in the type, provide them at the edge, layers as values) is fully portable. The library should ship `Layer<Input, Output>` (or, more Swift-idiomatically, a `Module` `@resultBuilder`) as a composable value supporting effectful, asynchronous, parallel construction with deterministic shutdown. ZIO's killer feature here is **async, parallel acquisition with structured shutdown**; modern Swift can match this with `async let` + `Task` + structured concurrency, and the library should bake it in rather than bolt it on.
+
+**.NET's IServiceCollection / IServiceProvider plan-vs-produce split is the right two-phase design.** Build a mutable `ServiceCollection`-style declaration; `BuildServiceProvider()` produces an immutable container. The graph becomes a first-class value that can be inspected, validated, dry-run-tested, and visualized before any object is constructed. distage's "plan vs produce" terminology (from the Scala distage library) names the same idea more sharply. The Swift implementation is straightforward with a result builder + a `ContainerPlan` value type.
+
+**Go's "wire dependencies in `main()`" cultural default is the right baseline recommendation.** Most apps don't need a DI framework at all. The composition root in `App.init()` (SwiftUI), `application(_:didFinishLaunching:)` (UIKit), or `main` (CLI/server) is sufficient up to ~30 components. Swift, like Go, should officially recommend manual constructor injection as the default and reach for the container only when (a) scoping is required, (b) the graph exceeds threshold size, or (c) feature-module modularization demands it.
+
+What Swift should *not* steal is annotation-processor codegen (Dagger, Hilt, Wire, Needle, SafeDI, shaku, Koin Annotations). The build-time cost is real, the toolchain integration is fragile, and the result is correctness-judged-outside-the-type-system — which is structurally in tension with Swift's modular incremental build model and library evolution. The five-language consensus is clear: Scala 3, Haskell, F#, modern Rust, and modern Kotlin all converge on type-driven or DSL-driven runtime DI, not codegen.
+
+## 5. Library-by-library deep dives — internals, not API
+
+Five libraries' source code is worth reading; their architectural decisions inform what to keep and what to reject.
+
+**swift-dependencies (Point-Free, current 1.11.0).** The internals reveal a deliberately minimal core. `DependencyValues` is a `Sendable` struct with TaskLocal-backed slots — `_current`, `isSetting`, `preparationID`, `currentDependency` — plus a `LockIsolated` cache box keyed by `ObjectIdentifier(Key.self)`. Subscript lookup checks per-instance `storage` first (overrides), then the shared cache, then materializes via `Key.liveValue/previewValue/testValue` based on the resolved `DependencyContext`. The `DependencyKey`/`TestDependencyKey` split exists so an interface module can declare `testValue` without dragging in the live implementation — exactly the modularization story the new library should preserve.
+
+`withDependencies` is the pivot point, ~620 lines. Its synchronous form swaps `DependencyValues.$_current.withValue(dependencies)` while flipping `isSetting` to true during configuration so default `testValue` short-circuits to `previewValue` (preventing recursive issue reports during *configuration*). Its async form uses `isolation: isolated (any Actor)? = #isolation` (Swift 6) for proper isolation inheritance. The class-result branch (`if R.self is AnyClass`) stamps `dependencyObjects.store(result as AnyObject)` into a global weak-keyed registry — this is what makes `withDependencies(from: parentObservable) { ... }` work for non-structured concurrency boundaries; it relies on `Mirror`-reflection over `_HasInitialValues`-conforming property wrappers.
+
+`withEscapedDependencies` is brilliantly simple: a `Continuation` struct captures `let dependencies = DependencyValues._current` at construction, and `yield` re-applies it via `withDependencies` on the other side of an escaping closure. The same trick handles Combine, GCD, NotificationCenter, and AsyncStream-from-non-Task. The library author's stance is documented: avoid escaping closures; this exists as acknowledged debt.
+
+What swift-dependencies got right and the new library should keep: TaskLocal foundation, Value-type `DependencyValues` with shared cache, `DependencyKey`/`TestDependencyKey` split, `reportIssue`-based unimplemented sentinels, computed-property `liveValue` with first-access caching, opt-in macros isolated to a separate product, `#fileID`/`#line` propagation for diagnostics. What it got wrong: the `@Dependency` property wrapper's mutable storage collides with `Sendable` on classes (Discussion #204; the maintainers' workaround is ugly); static `@Dependency` traps on lazy-init capture; `withDependencies(from:)` requires runtime `Mirror` reflection plus a global weak registry; the TaskGroup-body `withValue` runtime trap is not made discoverable; no first-class Combine integration; cache invalidation is implicit and process-lifetime-scoped; no DI graph or cycle detection. The Sendable schema mismatch (`TestDependencyKey.Value: Sendable` but `DependencyKey.Value` not) confuses Swift 6 migrations.
+
+**Factory (Michael Long, current 2.5.x).** Two-tier protocol architecture: `ManagedContainer` (any-class with a `manager`), `SharedContainer: ManagedContainer` (adds `static var shared`), and `final class Container: SharedContainer`. The reason `Container` is a class is **identity for scope caching** — each container owns a `ContainerManager` that caches resolutions; copying a struct would invalidate cached singletons. `Factory<T>` is a value-type struct holding only a `FactoryRegistration<Void, T>` — building one is free; the closure lives by-value. The "self { Service() }" sugar is `ManagedContainer.callAsFunction(key: StaticString = #function, _:)`, where `#function` evaluates to the property name at the call site, providing Factory's source-level name-derived registration key. This is **the cheapest possible compile-time-stamping technique** — no reflection, plays with autocomplete, gives human-readable trace output.
+
+Factory's compile-time safety claim is narrower than its marketing. It is per-key-existence: `@Injected(\.myService)` fails to compile only if `myService` is not a member of `Container`. It does *not* enforce that the computed property's body returns a non-`fatalError`-bodied factory, that the bound container is the same one resolving, that scope choices are sensible, or that the graph is acyclic. Cycles trap at runtime via `triggerFatalError` in DEBUG only. **This is the central design lesson:** KeyPath checking catches typos and type drift; nothing more. The new library should make this honest.
+
+What Factory got right: lazy computed-property registration, `#function` keys, KeyPath public injection token, value-typed `Factory<T>`, scope-as-overridable-class pattern, per-container `ContainerManager` with separate process-wide `Scope.singleton` cache, `@TaskLocal Scope.singleton` for test isolation, contexts as parallel registration maps, separate `FactoryTesting` SPM target. What it got wrong: `Container.shared` as a global service-locator; `@unchecked Sendable` everywhere instead of choosing actor-isolated or lock-protected discipline; `Scope.singleton`'s shared cache being process-global is surprising; `ParameterFactory` not being injectable via `@Injected` is a leaky abstraction; the graph scope semantics are confusing even to careful users.
+
+**SafeDI (Dan Federman, current 1.5.4).** Macro-based whole-program graph validation. `@Instantiable` + `@Instantiated` + `@Received` + `@Forwarded` decorate types and properties. The actual work happens in `Sources/SafeDICore`: a `SyntaxVisitor` subclass walks every Swift file in the project, builds the dependency graph, performs depth-first resolution from `@Instantiable(isRoot: true)`, and emits `SafeDI.swift` containing the wiring. The `.safedi/configuration/include.csv` mechanism exists because macros cannot see across module boundaries; the user must enumerate every dependent target's source root. Critically, **SafeDI cannot validate types in pre-built binary frameworks (XCFrameworks)** because there's no source for the visitor to walk — same wall Needle hits.
+
+Known SafeDI limitations beyond the architectural ones: SwiftSyntax build-time tax (Pointfree's measurement: ~20s debug, 4+ min release for a clean SwiftSyntax build); macro debugging difficulty (Federman's own `pr-shepherd` Claude subagent routes SafeDI errors to a dedicated agent, empirical evidence the author treats them as a separate fix-up class); compiler-version coupling (the prebuilt-SwiftSyntax flag breaks across compiler patch versions per Federman's 1.4.0 release notes). The recent `swiftlang/swift#84192` crash filed by Federman on Sep 10, 2025 demonstrates SafeDI sits on the bleeding edge of swift-frontend's SwiftSyntax interaction.
+
+**Needle (Uber, current 0.25.1, Sep 2024).** Same architecture as SafeDI but executed via a CLI binary instead of a macro. SourceKitten-driven five-stage pipeline: parse → link parent-child → ancestor-traverse for each `Dependency` protocol property → emit `DependencyProvider` classes → serialize. Generated providers look like `var imageCache: ImageCaching { return rootComponent.imageCache }` — it deliberately leans on the Swift compiler as a *second* validation pass. The CLI distribution (Carthage/Homebrew/source) is the binary friction; SwiftPM distribution has been an open issue (#364) since October 2020. Maintenance has slowed; Swift 6 strict concurrency migration is incomplete; `Component<T>`, generated providers, and the global `DependencyProviderRegistry` would need significant rework.
+
+**Both SafeDI and Needle achieve compile-time graph validation by performing whole-program analysis outside the Swift type system.** That single architectural choice is the source of every limitation: tension with modular SPM (the `include.csv` and `--additional-imports` workarounds invert the modular dependency direction), tension with library evolution (XCFramework types cannot participate), tension with build-time performance (the analyzer runs on every build, scaling with source size), and tension with Swift idiom (errors are external judgments rendered as compile errors, not type-system judgments).
+
+**Knit (Block/Cash App)** wraps Swinject with compile-time-typed accessors and a `DuplicateRegistrationDetector` `Behavior`. The two ideas worth stealing are (a) **type-safe generated accessors** so `resolver.foo` returns non-optional `Foo` instead of Swinject's `resolve(_:)?` force-unwrap antipattern, and (b) **a default-on debug behavior that reports duplicate registrations** at runtime — the smallest amount of runtime safety machinery that catches the largest class of multi-module bugs.
+
+**Crocodil (recent)** demonstrates the right macro shape: `@DependencyEntry var apiClient = APIClient()` collapses key + accessor into one declaration. This is strictly better than Pointfree's manual `enum SomeKey: DependencyKey { ... }` + extension dance, and the new library should adopt this shape (renaming the macro to fit its naming).
+
+## 6. Apple's primitives — exhaustive coverage and bridge points
+
+`EnvironmentValues` is internally a `Sendable, SendableMetatype` struct keyed by `ObjectIdentifier(Key.self)`. The community "copy-on-write trie" model is a reasonable mental model but not Apple-documented. Two performance facts matter: (a) **SwiftUI tracks per-key environment dependencies**, so only views whose body read a changed key are invalidated, but (b) even unread environment updates pay a traversal cost — WWDC25 #306 explicitly warns against storing rapidly-changing values in the environment.
+
+`@Environment(MyType.self)` (the type-form added iOS 17 alongside Observation) traps at runtime when no ancestor injected, with a recognizable "No Observable object of type _ found" message. The reason is structural: `EnvironmentKey` *requires* a `defaultValue`, so the underlying key for the type form has `defaultValue: nil`, and the projected value being non-Optional traps on read. This is why `@Entry`-style DI cannot give compile-time graph completeness — **the type system has no slot for "no default exists"**.
+
+The `@Entry` macro (Xcode 16) expands to a private nested `__Key_<name>: EnvironmentKey` struct plus get/set on the enclosing extension. It works on `EnvironmentValues`, `Transaction`, `ContainerValues`, and `FocusedValues` — for `FocusedValues` the default must be `nil`. The synthesized key being private is fine for the new library: ship a public `@Entry container: Container = .live` from the library module; downstream code reads `\.container` without naming the key.
+
+**Observation (iOS 17+).** `@Observable` adds `_$observationRegistrar: ObservationRegistrar` to a class, decorates each stored `var` with `@ObservationTracked` (rewriting to underscore-backed storage with `access`-on-get and `withMutation`-on-set accessors), and adds an extension declaring `Observable` conformance. Per-property invalidation is real and consequential for DI: a SwiftUI view that reads only `donuts` from a `FoodTruckModel` with `donuts`/`orders`/`employees` invalidates only when `donuts` changes — completely different from `ObservableObject`'s object-level granularity.
+
+`withObservationTracking` is a **fire-once** mechanism — the first mutation to any tracked property fires `onChange` once, then deregisters. Re-arming is the caller's responsibility. SE-0475's `Observations<Element>` (Swift 6.2) provides an `AsyncSequence` of derived values for non-SwiftUI consumers; SE-0506 (accepted Feb 2026) adds options, immediate (non-coalesced) delivery, and deinit notification. The library should not invent its own observation primitives; it should expose `@Observable` services through the container and let SwiftUI's tracking handle invalidation.
+
+**MainActor inference rules in Xcode 26.** SE-0401 removed actor-isolation inference caused by property wrappers (Swift 6 default). SE-0461 changes nonisolated *async* functions to run on the caller's actor by default — `nonisolated(nonsending)` is the explicit spelling, `@concurrent` is the opt-out for genuine off-main work. SE-0466 adds `-default-isolation MainActor` and `SwiftSetting.defaultIsolation(MainActor.self)` for app modules. SE-0470 adds isolated conformances (`@MainActor SomeProtocol`) and the `SendableMetatype` carve-out that protects library protocols from being dragged into MainActor isolation.
+
+The library-author stance is non-negotiable: **library targets default to `nonisolated` isolation, never `MainActor`**. Library protocols inherit from `SendableMetatype` so consumer types in `MainActor`-by-default modules can conform without isolation pollution. Public async APIs are `nonisolated(nonsending)`. App-side adoption of `MainActor` default is a separate, target-local choice the library does not impose.
+
+**Apple's sample code is unanimous on the architectural pattern.** Backyard Birds, Hello World (visionOS), Destination Video, Food Truck, BOT-anist, and the 2026 Foundation Models sample all use the same shape: composition root in `@main App` as `@State var model = …`, `.environment(model)` injection at the scene boundary, fine-grained child views read what they need via `@Environment(Type.self)` or initializer parameters. **No Apple sample uses a service-locator pattern.** The closest is `AppDependencyManager` for App Intents, which exists because `AppIntent` types must conform to a zero-argument `init()` that the system constructs.
+
+**WidgetKit + AppIntents have specific constraints.** Every app extension is a separate process; the in-memory container is unreachable from extensions, period. Persistent rebootstrap layers (App Group + SwiftData/Core Data, App Group UserDefaults, Keychain access groups, Darwin notifications) are the IPC primitives. AppIntents has its own DI mechanism — `AppDependencyManager.shared.add(dependency:)` and the `@Dependency` property wrapper — that is parallel to and incompatible with anything you build because the system constructs the intent. Swift 6 mode requires the keyed async-closure form: `AppDependencyManager.shared.add(key: "ModelContainer") { @MainActor in modelContainer }`. The library cannot piggy-back on this; ship an explicit adapter.
+
+**iOS 26's automatic UIKit observation tracking** (`UIObservationTrackingEnabled` Info.plist key, default on) wraps `updateProperties()`, `viewWillLayoutSubviews()`, `layoutSubviews()`, and many other update methods in `withObservationTracking`. This means the new DI library's `@Observable` services injected via `UITraitCollection` traits become reactively read in UIKit views without explicit `setNeedsLayout()` plumbing — the same behavior SwiftUI has had since iOS 17.
+
+## 7. Swift 6.2 strict concurrency — the exhaustive list with DI implications
+
+Twenty-three Swift Evolution proposals affect DI library design. The shortest defensible summary: **the only structurally sound primitive for "ambient" dependency scope in Swift 6 is `@TaskLocal`**. Anything based on `static var`, GCD, Combine, or NotificationCenter observers is either disallowed by SE-0412 or fails to propagate across structured concurrency.
+
+The authoring stance for the library is concrete. Use `swift-tools-version: 6.2` and adopt Approachable Concurrency at the package level for *library* sources but explicitly leave default isolation `nonisolated`. Public protocols inherit from `SendableMetatype`. Registration closures are `@Sendable`; transient factories use `sending` for non-Sendable services. The `Container` is `Sendable` — actor or `final class : @unchecked Sendable` with internal locking. Async public APIs are `nonisolated(nonsending)`; CPU-bound work uses `@concurrent` explicitly. `withDependencies` takes `isolation: isolated (any Actor)? = #isolation` for ergonomic interop. `@TaskLocal` is the sole scoping primitive. A `TestScoping` trait integrates with Swift Testing 6.1.
+
+The non-Sendable dependency problem (AVAudioEngine, CMMotionManager, CLLocationManager, AVAssetWriter, URLSessionDelegate-based clients, NSWindow, UIView) is solved with five named registration overloads: **`register` for Sendable services, `registerMain` for `@MainActor`-pinned, `registerSending` for transient factories of disconnected regions, `registerIsolated` for caller's-actor isolation via `#isolation`, and `registerUnchecked` as a last-resort with `@unchecked Sendable`-constrained types**. Each makes the discipline explicit at the registration site rather than leaving it ambiguous.
+
+The TaskLocal propagation matrix is the user-facing contract that must be documented loud. `Task { … }` and `async let` and `withTaskGroup`'s `addTask` children all inherit. `Task.detached` does not. `withTaskGroup`'s body cannot bind new TaskLocals (runtime trap). `AsyncStream` producer-side does not propagate; consumer-side does. Combine, GCD, NotificationCenter, and `@objc` delegate callbacks do not propagate. SwiftUI body is messy and depends on whether the override was set in a path that survives to the next render. The library's escape hatch (Pointfree's `withEscapedDependencies` pattern: capture a snapshot, re-bind on the other side) handles all of these but is leaky — users must remember to wrap every escaping closure.
+
+SE-0461 is the consequential 2026 change. Today's `nonisolated async func resolve(...)` hops to the global executor at entry (SE-0338); after `NonisolatedNonsendingByDefault`, it runs on the caller's actor, eliminating a whole class of "non-Sendable resolve from MainActor" errors. **Library async APIs must be `nonisolated(nonsending)` post-6.2; mark CPU-bound work `@concurrent` explicitly.** Code that relied on `await foo()` going to the background quietly stays on MainActor after the flag flip — audit the migration carefully.
+
+Two SE-0470 soundness holes remain in 6.2 (issues #82550 and #85742) where casts and generic constraints don't fully enforce isolation. SE-0418/0438 KeyPath sendability inference still misses static key paths and `WritableKeyPath` interactions in some configurations (issue #84983). The library should provide manual `& Sendable` escape-hatch overloads.
+
+## 8. SwiftUI, UIKit, AppKit, extensions, server-side interop
+
+The single most important design decision is whether the library lives *alongside* SwiftUI's `@Environment` or *inside* it. **Live inside it.** Make the container itself an `EnvironmentKey` value, then have the `@Inject` property wrapper read from `@Environment` internally via `DynamicProperty` conformance. The view tree owns the resolution context; SwiftUI handles invalidation; the library is one type plus one property wrapper.
+
+Concretely: `extension EnvironmentValues { @Entry var container: Container = .live }` declares the EnvironmentKey. `@Inject<Value>: DynamicProperty` stores a `KeyPath<Container.Resolver, Value>` and reads the container from `@Environment(\.container)` in `wrappedValue`. Because `Inject` conforms to `DynamicProperty`, SwiftUI calls `update()` before each `body` evaluation, the underlying `@Environment` re-reads, and any `.environment(\.container, customContainer)` chain anywhere up the view hierarchy is honored. This pattern beats Factory's `@InjectedObservable` approach (which resolves through global `Container.shared` and cannot be subtree-overridden by view modifier) and avoids the swift-dependencies "two-system trap" where TaskLocal overrides don't propagate to future SwiftUI body invocations.
+
+For UIKit, the iOS 17+ `UITraitDefinition` mechanism gives an `@Environment`-equivalent: stuff the container into `traitOverrides` on the root view controller, read it via `traitCollection[ContainerTrait.self]` in `updateProperties()`. With `UIObservationTrackingEnabled` (default in iOS 26), `@Observable` services read in `updateProperties()` automatically re-render when state changes. This is the right read-side bridge for UIKit DI in 2026, and it means the library's UIKit story is genuinely native rather than glue.
+
+For AppKit, the responder chain is built-in DI nobody calls DI: any `NSResponder` can vend a container by walking `nextResponder`. `NSDocument` is the cleanest composition root for document-based apps. macOS 15+ has the same `NSObservationTrackingEnabled` Info.plist key.
+
+For extensions, the rule is uncompromising: **process isolation is total.** App extensions cannot share in-memory state with the host app. Every launch must rebootstrap from persistent state via App Group + SwiftData/Core Data (preferred), App Group UserDefaults, App Group files with `NSFileCoordinator`, Keychain access groups, or Darwin notifications. The library should expose a `Container.bootstrapForExtension()` factory that registers a *minimum* set of services backed by App Group storage, distinct from the app's full bootstrap. WidgetKit timeline providers should call this once per process via a `static let`.
+
+For server-side Swift, the library's core must have zero UIKit/SwiftUI dependencies — `import Foundation`-only at most. Ship `StitchUIKit`, `StitchSwiftUI`, `StitchVapor`, `StitchHummingbird` as separate products. The Vapor 4 pattern (extensions on `Application` and `Request`, two-scope app/request lifetime, `app.lifecycle.use(MyService())` hooks) and the Hummingbird 2 / `swift-service-context` pattern (TaskLocal-backed typed baggage) both reduce to the same primitive: a `Sendable` container struct + TaskLocal binding. The library's core delivers exactly that, so server adoption is a thin adapter, not a rewrite.
+
+## 9. Modular SPM architecture — the practical realities
+
+The interface/impl split is correct but the practical realities matter. The interface module declares the `Foo` protocol, the `FooKey: DependencyKey` with a `liveValue` that delegates to a runtime-registered factory, and the `extension Container { var foo: any Foo }` accessor. The live module imports the interface and provides `LiveFoo: Foo` plus a `FooLiveBootstrap.register()` static call that writes `_liveFooFactory = { LiveFoo() }` into a `nonisolated(unsafe)`-stored indirection variable. The composition root imports both and calls `FooLiveBootstrap.register()` in `App.init()`. **The interface module never imports the live module.** Same trick swift-dependencies uses for `liveValue`/`testValue` separation; same convention swift-log's `LoggingSystem.bootstrap` standardized.
+
+Cross-module key uniqueness is a real risk. Swift extensions are resolved at use-site by visible imports — two modules declaring `extension Container { var foo: ... }` produce *silent shadowing* if only one is imported in a given file. Defense: every `DependencyKey` lives in exactly one module, conventionally the interface module named `FooInterface`. The library should ship a runtime `DuplicateRegistrationDetector` (Knit pattern) that fires on second registration of the same key in DEBUG, catching the cases convention misses.
+
+The Tuist "Modules That Matter" taxonomy — Source / Interface / Tests / Testing / Example per feature — is the canonical 5-target shape, and it maps cleanly onto the interface/live/testing pattern. Airbnb's published architecture (Bachand: ~1500 first-party modules, 12 module types with strict visibility rules, 80% CPU utilization on parallel build, test coverage 50% in modular code vs 23% in legacy) validates the approach at the largest scale. Bumble's three-part case study chose Tuist after rejecting SPM (graph-resolution regressions at hundreds of local packages) and Bazel (too heavy for team size). Lyft and Airbnb went Bazel for hermetic remote builds and sub-target caching at >500 modules. SPM-only is workable up to ~50–100 modules; Tuist is the right choice in the 50–500 range; Bazel above that.
+
+For library evolution, the discipline is `@_spi(Internal) public`-gating the storage and *not* `@frozen`-ing the container struct. `@_spi` lets testing and advanced extensions reach in; ordinary `import Stitch` cannot. Adding `@frozen` after shipping is binary-incompatible — "structs must be born frozen, or remain forever resilient." For a library that may ship as XCFramework, leave `Container` un-frozen; mark `Dependency<T>` and `Scope` enum `@frozen` only after API stability is locked.
+
+Build performance under macros is the elephant in the room. SwiftSyntax build is ~20s debug, 4+ minutes release on first build per Pointfree's measurement; Xcode 16.4+ prebuilt SwiftSyntax cuts this dramatically (37s → 15s clean debug build measured by Pointfree on their TCA demo). The Swift 6.1+ compiler-bundled SwiftSyntax helps further. The architectural rule from this is: **macros must be optional, not load-bearing.** Ship two SPM products: `Stitch` (no SwiftSyntax dependency, no build-time tax) and `StitchMacros` (the optional ergonomic-sugar macros). Document both clean-build and incremental-build performance numbers in the README.
+
+## 10. Performance benchmarks and ARC pitfalls
+
+Order-of-magnitude resolution costs on Apple Silicon: KeyPath get on a struct/class field ~5–30 ns, `Dictionary<ObjectIdentifier, …>` lookup ~30–60 ns, `@TaskLocal` lookup O(depth) at ~5–15 ns per frame (typical depth 1–5), existential method call ~5–10 ns, specialized generic call <1 ns when `@inlinable` allows inlining. Full `@Dependency(\.foo)` access (TaskLocal + KeyPath + dictionary) is typically <50 ns — comparable to a SwiftUI `@Environment` access. **Generic specialization gives 5–50× speedup on hot paths**; the resolution path should be `@inlinable` + `@frozen` on `Dependency<Value>` and `DependencyValues`, plain `public` on `Container` and registration APIs.
+
+Cold start matters. Apple's launch budget is ~400 ms to first frame; ~100 ms is system overhead, leaving ~300 ms for app code. **Default to lazy registration**; eager registration of 200 services costs ~1–3 ms in dictionary inserts but balloons to 50–200 ms if it triggers `liveValue` evaluation of expensive singletons (Firebase, AVAudioEngine, SwiftData containers). Provide an opt-in `eagerSingleton` modifier for services that *must* be alive at launch.
+
+ARC pitfalls specific to DI are predictable. **Self-capture in registration blocks is wrong** — `[weak self]` inside `register { … }` doesn't fix anything because the closure is owned by the container, not by `self`; the right answer is constructor injection. **Container ↔ service cycles** form when a service stores the container that has the service in singleton scope; break by passing only resolved dependencies, never the container. **`@WeakLazyInjected`-style backrefs** for view-model → coordinator are necessary; ship both `@Inject` and `@WeakInject` variants. **Existential heap allocation** kicks in past the 3-word inline buffer (24 bytes); a struct with 2+ closures (4+ words for function-pointer + context pairs) heap-allocates as `any P`. Prefer `some Protocol` or generic constraints in resolve hot paths; for huge value-typed configurations, wrap in a `final class Box` and store the reference.
+
+The witness struct pattern is a special case here: it produces small `Sendable` types that work cleanly with generic specialization but heap-allocate when stored as `any DependencyKey`. swift-dependencies works around this by storing values generically (specialized) rather than as `any`. The new library should follow the same discipline: storage is generic over the value type at the lookup site, not erased to existential.
+
+## 11. Testing exhaustively — Swift Testing 6.1 and beyond
+
+The "unimplemented" pattern is the gold standard. Every test-default closure calls `reportIssue` (from `pointfreeco/swift-issue-reporting`, the evolution of `XCTestDynamicOverlay`) and either returns a placeholder or throws `Unimplemented`. **`fatalError` is wrong** — it aborts the entire test process, masking subsequent failures. `reportIssue` routes to `Issue.record(...)` under Swift Testing, `XCTFail(...)` under XCTest, the purple Xcode runtime warning in simulator, and a custom reporter (OSLog/Sentry) in production. The library ships its own `@DependencyClient`-style macro that auto-generates this pattern from a struct of closure properties.
+
+Swift Testing 6.1's `TestScoping` trait (ST-0007) is the official, sanctioned way to wrap each test in a `withDependencies` block. The library ships a `DependenciesTrait: TestTrait, SuiteTrait, TestScoping` whose `provideScope(for:testCase:performing:)` calls `try await withDependencies({ mutate(&$0) }, operation: { try await function() })`. Suite-level traits run once per test (not once per suite); suite-level overrides layer with test-level overrides because each test gets its own task-local scope. The `.dependencies { $0.foo = .mock }` form integrates cleanly with `@Suite` and `@Test` attributes.
+
+Swift Testing's parallel-execution-by-default-within-a-single-process is a major shift from XCTest. **TaskLocal-based DI is parallel-safe by construction**; static-state DI is not. Swinject's classic `Container.shared.register(...)` pattern is hostile to parallel Swift Testing unless every test resets the container, which serializes the suite. The new library must not have this property; the canonical storage is a `@TaskLocal` of an immutable struct.
+
+Snapshot testing requires deterministic ambient inputs. The library ships `Date`, `UUID`, `Calendar`, `Locale`, `TimeZone`, `ContinuousClock`/`SuspendingClock` keys out of the box, with `pointfreeco/swift-clocks`-compatible `TestClock<Duration>` for advancing time deterministically. swift-dependencies' `UnimplementedClock` as `testValue` for clocks (which `reportIssue`s on access) is the right default — it forces tests to provide a `TestClock` explicitly.
+
+Preview safety is delivered through Apple's blessed `PreviewModifier` (Xcode 16 / iOS 18). Ship a `StitchPreview: PreviewModifier` whose `body(content:context:)` applies a preview-scoped container override. `@Previewable` (Xcode 16) lets `@State`/`@Query` go directly inside `#Preview { ... }` without a wrapper view. Detect preview context via `ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1"` and resolve `previewValue → testValue → liveValue`.
+
+**Generational dependencies are solved with `~Copyable` scope tokens.** The post-login `User`, the per-request cache, and the per-session HTTP client all live in a `SessionScope: ~Copyable` struct with `consuming func enter` and a `deinit` that tears down the scope. Inside `enter`, a TaskLocal binds the scope and descendants read it non-optionally. The compiler enforces single-use (use-after-consume = `noncopyable_use_after_consume` Sema error); copying is forbidden by the type system. This is structurally cleaner than Needle's hierarchical Component scopes (no codegen) and stricter than swift-dependencies' optional-with-`reportIssue` approach (`~Copyable` cannot be silently leaked).
+
+For test doubles, the recommendation is to generate stubs and spies via the witness macro and to encourage hand-written fakes (in-memory `URLProtocol`, in-memory `ModelContainer`) for state-heavy dependencies. **Heavy mocking with `expect`-style call counts is brittle and leaks implementation**; prefer fakes when the surface is non-trivial.
+
+## 12. Error handling and failure modes
+
+The strategy ranking is clear. `fatalError` (Needle's defensive code, Swinject's `resolve(_:)!` antipattern) is too harsh. `precondition` is debug-only. Optional return (Swinject's `resolve(_:)?`) bypasses the type system and pushes nil-handling into every call site. **`reportIssue` + `Unimplemented` throw** (swift-dependencies' approach) is the right primitive: visible test failure or runtime warning in development, no-op or routable to OSLog/Sentry in production, never crashes.
+
+Typed throws (SE-0413) are useful internally — `throws(ResolutionError)` on private APIs gives exhaustive `catch` checking — but lock the API surface; adding a case is source-breaking. Recommendation: typed throws on package/SPI APIs, untyped `throws` plus a concrete `DependencyError` enum at the public boundary. Advanced consumers can `catch let e as DependencyError` for exhaustiveness; ordinary consumers see normal `Error`.
+
+Cyclic dependency detection at runtime is straightforward: a `@TaskLocal var resolutionStack: [String]` walks the resolution chain; on revisit, throw `DependencyError.cyclicDependency(path: cycle)`. The error message must include the **full cycle path** with the offending key first and last (`A → B → C → A`). Compile-time cycle detection requires non-trivial type-system tricks (mutually recursive parameter packs); not worth shipping for a general-purpose library.
+
+## 13. Migration paths from existing libraries
+
+Migration must be a first-class feature, not an afterthought. The biggest blocker to adoption isn't ergonomics — it's the cost of touching 800 `Container.register` lines.
+
+The strangler-fig adoption playbook is the documented sequence: add the new library alongside the old, ship a global bridge that lets any service registered in the legacy system be reachable via the new one, pick a leaf module and migrate its consumption sites only (the bridge fetches from legacy; behavior unchanged), convert the leaf module's *registrations* to the new system, add `testValue` and write Swift Testing tests using `.dependencies { … }` traits, repeat upward toward the AppDelegate, deprecate legacy registrations with `@available(*, deprecated, …)`, remove the legacy library when bridge is unused. A CI check that fails when both systems register the same service prevents silent precedence bugs during the transition.
+
+The library should ship explicit bridges. **Swinject** → wrap `Swinject.Container.shared.resolve(T.self)!` in a `SwinjectBridgeKey<T>: DependencyKey` with `liveValue` that delegates and `reportIssue`s on nil. **Resolver** (officially deprecated) → one-to-one method mapping; the same KeyPath patterns apply. **Factory** → expose a `subscript<T>(factory keyPath: KeyPath<Container, Factory<T>>) -> T` on the new `DependencyValues` that calls the Factory keypath. **swift-dependencies** → ship a *bidirectional* bridge (their container as a key in your container, your values readable via their `@Dependency`) so users on TCA can adopt incrementally. **Pure init DI** → lowest-friction; migrate one service at a time. **Plain `@Environment`-only** → a `DependencyEnvironmentKey<K: DependencyKey>: EnvironmentKey` adapter exposes existing keys as `@Environment(\.[dependency: APIClient.self])`.
+
+## 14. API design and concrete naming
+
+After surveying 25 DI libraries plus the modern Swift API canon, twelve concrete decisions land for the new library.
+
+The naming convention is **"Dependency"** — Pointfree owns the noun in Swift; going against this is an uphill battle. The property wrapper is **`@Dependency(\.foo)`** to match the established idiom. Keys are **always KeyPath**; type-identity (Resolver) is unsafe, strings (Spring) are typo-prone, generated symbols (Wire) are opaque. KeyPath is autocompleted, refactor-safe, and grep-friendly — the last property is *critical* for AI-assisted coding workflows.
+
+The container shape is a **`struct` plus extension** with `@TaskLocal` propagation, not a `class Container` (invites mutation) or `actor Container` (every read suspends). The DSL keeps **computed properties as the canonical form** — `extension DependencyValues { @DependencyEntry var apiClient = APIClient() }`. A `@resultBuilder Module` is fine for grouping (test fixtures, plug-in registries) but should not be the primary registration site; computed properties are infinitely greppable, result builders are not.
+
+Scope vocabulary uses the **.NET-canonical `.singleton`, `.transient`, `.scoped`, plus `.cached` and `.weak`** — 95% recognition across .NET, Java, Kotlin, and Vapor refugees, and Factory's `.cached` (with TTL) and `.weak` (lives only while held strongly elsewhere) genuinely add value. Reject `.unique` (Factory's name for transient — non-obvious) and `.session` (overloaded with auth).
+
+**No registration verb.** Pointfree's no-verb approach (write a computed property; the macro does the rest) is the lowest-boilerplate, highest-discoverability model. Provide `register` as an *override hook* only.
+
+Override is **`withDependencies { } operation: { }`** verbatim from Pointfree, scoped via `@TaskLocal`. Add `prepareDependencies` for app-lifetime overrides.
+
+Test doubles are named by *intent*, not technique: **`liveValue`, `previewValue`, `testValue`** — the strongest naming in the Swift DI space, because three named environments collapse "scope" plus "override target" into one mental model. Reject `.mock` (which mock?), `.fake` (less precise), and pure `.unimplemented` (it *is* the default `testValue`). Add `Dependency.unimplemented("api.fetch")` as a *helper* that XCTFails on access.
+
+The error type is a single **`DependencyError`** enum with cases `.missingLiveValue(KeyPath)`, `.cycle([KeyPath])`, `.unimplemented(String)`, conforming to `LocalizedError`.
+
+The module name analysis lands on **`Stitch`** — clean, no major Swift collisions, evocative of weaving a graph; verb form ("Stitch wires up your dependencies") is natural; metaphor matches the library's job. Alternatives `Inject`, `Wire`, `Hatch`, `Loom` were considered and rejected on either collision or readability grounds.
+
+Core types: **`Container`** (the value-typed property bag), **`Dependency<T>`** (the deferred-constructor type, replacing Factory's `Factory<T>`), **`Module`** (a `@resultBuilder`-backed grouping for test fixtures), **`Scope`** (the lifetime enum), **`Stitcher`** (the runtime resolver, internal-facing).
+
+The `DependencyKey`-equivalent protocol is **`DependencyEntry`** — but with the macro doing the work (`@DependencyEntry var foo = …`), no public protocol need ever be named in user code, which is strictly better.
+
+## 15. Resolutions to the six open questions
+
+**(1) Compile-time graph validation enforced by Swift's type system.** Resolved via the five-layer stack: capability protocols (graph closure at the composition root), protocol witnesses (per-service completeness), phantom-typed scope containers (cross-scope leak prevention), generic constructor injection (per-dependency completeness), `~Copyable` scope tokens (one-shot lifetime enforcement). This stack lands every failure mode as one of `missing_argument_for_parameter`, `type_does_not_conform_to_protocol`, or `cannot_convert_argument_value` — the three highest-quality Sema diagnostics. Whole-program graph closure across modules is *not* achievable without external analysis; the library is honest about this and supplies a runtime `DuplicateRegistrationDetector` for the cases convention misses.
+
+**(2) Generational dependencies (post-login `User`).** Resolved via `~Copyable` scope tokens (SE-0390). A `SessionScope: ~Copyable` is constructed at login, owns the user/session/per-request cache, and is `consume`d into a closure via `enter`. Inside, a `@TaskLocal` binds the scope and descendants read non-optionally. The compiler enforces single-use; the deterministic `deinit` runs on scope exit. This is the cleanest Swift-native answer; it beats Needle's codegen-driven hierarchical components on simplicity and beats swift-dependencies' optional-with-`reportIssue` on safety.
+
+**(3) The non-Sendable dependency problem.** Resolved via five named registration overloads: `register` (Sendable services), `registerMain` (`@MainActor`-pinned, the right answer for `CLLocationManager`, `UIView`, `NSWindow`), `registerSending` (transient factories of disconnected regions, the right answer for `AVAudioEngine` if you're constructing fresh per-resolve), `registerIsolated` (caller's-actor isolation via `#isolation`, the right answer for context-flexible non-Sendable services), and `registerUnchecked` (last-resort `@unchecked Sendable` wrapper class with internal locking, documented carefully). Each makes the discipline explicit at the registration site rather than ambiguous.
+
+**(4) Property wrappers vs closure-scoped resolution.** Resolved in favor of property wrappers as the *primary* surface, because they are AI-greppable and integrate cleanly with SwiftUI's `DynamicProperty`. Provide closure-scoped resolution (`withDependencies { } operation: { }` plus a `Dependency[\.foo]` subscript inside default values, Crocodil-style) as a complementary primitive — necessary for sites where property wrappers don't fit (default arguments, free functions, server middleware).
+
+**(5) Bridging to SwiftUI's @Environment.** Resolved by making the container itself an EnvironmentKey value (via `@Entry`) and reading it from `@Inject<Value>: DynamicProperty` via `@Environment(\.container)`. SwiftUI handles invalidation; the library is one type plus one property wrapper. No parallel system, no two-system trap, no conflict with TaskLocal-based ambient overrides because both read the same container value at use site.
+
+**(6) Build-time/macro trade.** Already resolved by user constraint and re-affirmed: macros are strictly optional ergonomic sugar, isolated to a separate `StitchMacros` SPM product. The core `Stitch` product has zero SwiftSyntax dependency. Macros expand to plain Swift the user could write by hand. This pays the SwiftSyntax build-time tax only for users who opt in, and the Xcode 16.4+ prebuilt-binary mitigation is documented in the README.
+
+## 16. Topics the prior research missed or treated lightly
+
+**Server-side Swift DI.** Vapor 4's `Application`/`Request` extensions and `app.lifecycle.use(...)` hooks reduce to the same primitive as iOS DI: a `Sendable` container struct + TaskLocal binding. Hummingbird 2 uses `swift-service-context` for request-scoped propagation, which is essentially `withDependencies` specialized to typed baggage. The new library's core, kept Foundation-only, can serve both iOS and server with thin adapter products. This dual-platform property is genuinely differentiating; no current Swift DI library serves both well.
+
+**Type erasure patterns.** `AnyService<T>` is needed for heterogeneous service collections, PAT-constrained protocols, and producer closures. The Apple-canonical pattern (`AnyView`, `AnyPublisher`) stores closures rather than values. For the new library, the better answer is **protocol witnesses**: a struct of closures *is* its own type erasure, no wrapping required, partial overrides are `var` field mutations, and the macro generates the live/preview/unimplemented triad. Reserve `Any*` erasure for collection cases.
+
+**Dependency cycles via lazy/Provider.** Ship `Provider<T>` (the industry name) as the canonical cycle-breaker, alongside `@LazyDependency` for the property-wrapper form. SafeDI's `Instantiator<T>` is identical in shape; the macro wires it. Document `@autoclosure () -> T` and class `lazy var` as alternatives.
+
+**Hot reloading / dev-loop iteration.** Witness structs hot-reload trivially because stored closures are values; replace the value, the live container picks it up. Protocols with associated types do not hot-reload as cleanly because the witness table is binary metadata. Macros expand at build time; hot-reload of an `@Instantiable` body works, but changing the dependency graph (adding a new `@Received`) requires rebuild. SwiftUI Previews iteration speed is preserved by the interface/live module split — previews need only the interface module + `previewValue`s.
+
+**AI/agentic coding workflow integration.** This is genuinely consequential for the user's project. KeyPath-based DI lets an LLM `grep -r "extension DependencyValues"` and enumerate every dependency; adding a new one is a one-line patch in *one* file. Registration-block DI (Swinject `Assembly`s) requires the LLM to find the right assembly, understand its scope, and add a registration there — error-prone with multiple assemblies. SafeDI/Needle requires the LLM to understand scope hierarchy, decide between `@Instantiated` vs `@Received`, potentially edit the parent component, and know that whole-program validation may fail with a cryptic error. **Convention over configuration helps LLMs.** The library should insist on KeyPath consumption, macro-backed declaration in `extension DependencyValues`, ship a `swift package plugin add-dependency --name foo --type Foo` command (machine-readable path is easier than guiding an LLM through multi-file edits), and generate a `Dependencies.md` documentation page from macro expansions as the LLM's "table of contents." Document an "LLM contract" section in the README listing the exact greppable patterns and shell commands.
+
+**Documentation patterns.** DocC is canonical (Jazzy is dead). Structure: landing page + Articles directory (GettingStarted, Architecture, MigrationFromFactory, MigrationFromSwiftDependencies, ServerSideUsage) + `Stitch.tutorial` chapters. Articles for concepts, API docs for reference; cross-link rather than duplicate. Ship a `TodoExample/` Xcode project compiled in CI as both test corpus and documentation specimen. The README's first 200 words are the elevator pitch — one-sentence tagline, side-by-side declaration/consumption/override snippet, three-bullet differentiator list, install instructions, DocC link. Don't put detailed docs in the README beyond this.
+
+**License choice.** Apache 2.0 with Runtime Library Exception. A DI library is foundational infrastructure; companies will audit licenses before adopting it. Apache 2.0's explicit patent grant protects them from contributor patent assertions — a real risk for foundational libraries. Aligns with SSWG/Apple convention; signals "long-lived ecosystem cornerstone." MIT works for plug-ins; Apache 2.0 is right for the core.
+
+**Versioning and SemVer.** Stay in 0.x for 3–6 months: tag `0.1.0` when core works for one real app + DocC tutorial buildable + CI passes on Swift 5.9/6.0/6.1/6.2 across iOS/macOS/Linux + sample compiles in-repo. Solicit feedback on the Swift Forums. Release `1.0.0` only after at least three external production codebases have adopted, all public names are settled, and a public deprecation policy is documented. Pointfree's swift-dependencies stayed in 0.x for ~18 months precisely to surface "previews fall back to live by default — but should they?"-class problems before locking the API.
+
+**API stability commitments.** `@frozen` only on truly terminal types whose layout you commit to (eventually `Container`, `Dependency<T>`, `Scope` enum). `@_spi("Internal")` for macro-support types, witness adapters, and unsafe escape hatches — semi-public, opt-in via `@_spi(Internal) import Stitch`. `public` but explicitly experimental APIs use a `Warning` doc comment and `Experimental` DocC tag.
+
+**Other operational details.** Use `swift-actions/setup-swift@v2` for GitHub Actions; matrix Swift 5.9/6.0/6.1/6.2 across Ubuntu 22.04/macOS 14/15. Ship `.swift-format` and `.swiftlint.yml`. Submit to Swift Package Index with a `.spi.yml` for DocC hosting. Don't ship Carthage/CocoaPods integrations; SPM only. Adopt the Swift Code of Conduct verbatim. Reserve a `stitch-swift.dev` domain before announcing.
+
+## 17. The recommended architecture, concretely
+
+The user-facing API surface, sketched.
+
+```swift
+// — Composition root —
+@main struct App: App {
+    @State var container = Container.live
+    var body: some Scene {
+        WindowGroup { RootView() }.environment(\.container, container)
+    }
+}
+
+// — Declaring a service (interface module) —
+@DependencyEntry public var apiClient = APIClient.unimplemented
+
+public struct APIClient: Sendable {
+    public var fetchUser: @Sendable (Int) async throws -> User
+    public var saveUser:  @Sendable (User) async throws -> Void
+}
+extension APIClient {
+    public static let live = APIClient(
+        fetchUser: { id in try await URLSession.shared.fetch(.user(id)) },
+        saveUser:  { user in try await URLSession.shared.upload(.user(user)) })
+    public static let unimplemented = APIClient(
+        fetchUser: { _ in reportIssue("apiClient.fetchUser unimplemented")
+                          throw Unimplemented("apiClient.fetchUser") },
+        saveUser:  { _ in reportIssue("apiClient.saveUser unimplemented")
+                          throw Unimplemented("apiClient.saveUser") })
+}
+
+// — Consuming a service —
+@Observable final class FeedViewModel {
+    @Dependency(\.apiClient) var api
+    @Dependency(\.continuousClock) var clock
+    func refresh() async throws -> [User] { try await api.fetchUser(0) ; return [] }
+}
+
+// — Override at a SwiftUI subtree —
+ContentView().dependencies { $0.apiClient = .mock }
+
+// — Override in a test —
+@Suite(.dependencies { $0.continuousClock = TestClock() })
+struct FeedTests {
+    @Test(.dependencies { $0.apiClient.fetchUser = { _ in .preview } })
+    func refreshSucceeds() async throws { /* ... */ }
+}
+
+// — Generational scope —
+let session = SessionScope(user: loggedInUser)
+try await session.enter { borrowing scope in
+    try await withDependencies({ $0.session = scope }) {
+        try await runAuthenticatedAppShell()
+    }
+}
+```
+
+The implementation surface is layered. **Layer A (`Stitch`, no SwiftSyntax dependency)**: `Container` value-type struct backed by `@TaskLocal`, `Dependency<Value>` property wrapper conforming to `DynamicProperty`, `withDependencies`/`prepareDependencies` scoping, `DependencyEntry` protocol with `liveValue`/`previewValue`/`testValue` defaults, `Scope` enum, `Provider<T>` deferred constructor, `SessionScope: ~Copyable` and friends, `EnvironmentKey` adapter and SwiftUI bridge, runtime cycle/duplicate detection, swift-issue-reporting integration. **Layer B (`StitchMacros`, optional)**: `@DependencyEntry` collapses `var` declaration + accessor + key into one line, `@Witness` synthesizes a struct of closures from a protocol, `@Capabilities` generates per-aspect protocol conformances on a composition root, `@DependencyClient` macro for auto-generating unimplemented witnesses. **Layer C (integrations, separate products)**: `StitchSwiftUI` (Inject property wrapper, PreviewModifier, view modifier extension), `StitchUIKit` (UITraitDefinition adapter, UIObservationTracking compatibility), `StitchAppKit` (responder chain integration), `StitchTesting` (Swift Testing TestScoping trait, snapshot-testing helpers, TestClock), `StitchVapor` (Application/Request extension shims), `StitchHummingbird` (RequestContext/ServiceContext interop), `StitchAppIntents` (AppDependencyManager bridge). **Layer D (migration)**: `StitchMigrationFromFactory`, `StitchMigrationFromSwiftDependencies`, `StitchMigrationFromSwinject`, each providing typealiases and adapter keys.
+
+The container's internal storage is a `final class _Storage: @unchecked Sendable` behind an `os_unfair_lock_s` (Apple platforms) / `NSLock` (Linux), holding `[ObjectIdentifier: any Sendable]`. The class is opaque and `@_spi(Internal) public`-gated. The `Container` struct exposes a `subscript<K: DependencyEntry>(key: K.Type)` that takes the lock, checks per-instance overrides, falls through to a process-wide cache, and finally materializes via `K.liveValue` based on resolved context. `@TaskLocal` carries the override stack; `withDependencies` swaps it via `@TaskLocal.$_current.withValue(...)`.
+
+Resolution of context (`.live`/`.preview`/`.test`) follows swift-dependencies: probe `Test.current != nil` (Swift Testing), `NSClassFromString("XCTestCase") != nil` (XCTest), `ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1"` (Previews), default `.live`.
+
+## 18. Risk register and what could go wrong
+
+**Risk: the five-layer type-system stack is too verbose for adoption.** Capability protocols and protocol witnesses each impose declaration cost. Mitigation: macros (`@DependencyEntry`, `@Witness`, `@Capabilities`) collapse the boilerplate. Track adoption-blocked-by-verbosity issues in 0.x; iterate macro expansions before 1.0.
+
+**Risk: the `~Copyable` scope token pattern has limited Swift 6.2 support for non-copyable existentials.** Generics over non-Copyable types are still maturing. Mitigation: use `~Copyable` only at concrete-type interfaces; do not expose `~Copyable` existentials in the public API. Track SE proposals on non-Copyable existentials and revisit.
+
+**Risk: SE-0470 isolated conformances have known soundness holes (#82550, #85742) in Swift 6.2.** Casts and generic constraints don't fully enforce isolation. Mitigation: document the holes; recommend explicit `@MainActor` annotation as a belt-and-braces pattern; stay current with Swift releases that close the holes.
+
+**Risk: SE-0461 default behavior change is silent.** Code that relied on `nonisolated async` going to the background quietly stays on MainActor after `NonisolatedNonsendingByDefault` is on. Mitigation: audit every `nonisolated async` call site in the library; mark CPU-bound work `@concurrent`; document the migration carefully in the changelog.
+
+**Risk: the convention of "one DependencyKey per interface module" is unenforced.** Swift's silent-shadowing across modules is real. Mitigation: ship a runtime `DuplicateRegistrationDetector` (Knit pattern) default-on in DEBUG; document the convention in the README; provide a `swift package plugin lint-dependencies` build plugin that emits a warning when two modules register the same key name.
+
+**Risk: AppDependencyManager is parallel to and incompatible with the library.** AppIntents must use `@Dependency` from the AppIntents framework, not the library's `@Dependency`. Mitigation: ship a `StitchAppIntents` adapter that *also* registers each library dependency with `AppDependencyManager.shared.add(key:dependency:)` at bootstrap. Document the constraint clearly.
+
+**Risk: extension processes cannot share in-memory containers.** Users will try and be surprised. Mitigation: ship `Container.bootstrapForExtension()` as a documented, separate code path; in the README's extensions section, lead with "extensions are separate processes; rebootstrap from persistent storage."
+
+**Risk: the witness struct pattern's heap-allocation behavior past 3 words is non-obvious.** Users will store witnesses as `any DependencyKey` and pay heap allocation per resolve. Mitigation: store generically (specialized) at lookup sites, never as `any`; document the existential heap-allocation threshold; provide `@frozen` on the resolution path types.
+
+**Risk: macros pay a 15s+ build-time tax even on `StitchMacros`-opt-in users.** SwiftSyntax compile cost is real. Mitigation: aggressive SwiftSyntax version pinning per Pointfree's "good citizen" guidance; document the Xcode 16.4+ prebuilt-SwiftSyntax flag (`defaults write com.apple.dt.Xcode IDEPackageEnablePrebuilts YES`); never make macros load-bearing for correctness.
+
+**Risk: AI/LLM coding workflow integration is the user's stated motivator but is hard to test before adoption.** The "convention helps LLMs" claim is intuitive but unmeasured. Mitigation: ship a benchmark suite that prompts Claude Code / Cursor with a real codebase and measures success rate at "add a new dependency" tasks across DI library shapes. Publish results. Iterate.
+
+**Risk: 0.x → 1.0 timing.** Releasing 1.0 too early locks the API; too late strands adopters on `branch("main")`. Mitigation: explicit success criteria (three external adopters, public Swift Forums design review, settled ergonomics over 3+ months) before tagging 1.0; aggressive use of `@available(*, deprecated)` for pre-1.0 deprecations; clear changelog discipline.
+
+**Risk: industry inertia around swift-dependencies and Factory is large enough to make a new library dead-on-arrival.** Both are mature, well-loved, widely adopted. Mitigation: lean into bidirectional bridges so adoption is incremental, not a rewrite; lead with the differentiators that neither library offers (cross-platform server + iOS, `~Copyable` generational scopes, capability-protocol compile-time graph closure, AI-greppable conventions). Accept that the library may serve a niche rather than displacing the incumbents — niche-and-loved beats general-and-ignored.
+
+The largest unmitigable risk is that **Swift 6.2's type system genuinely cannot prove whole-program graph closure without external analysis**. The library is honest about this and substitutes per-call-site safety for whole-program safety. Users who require whole-program guarantees will continue to pay SafeDI's or Needle's costs; that is a defensible position. The new library targets the much larger set of users for whom per-call-site guarantees plus runtime duplicate detection plus a clean migration path from existing libraries plus genuine cross-platform support is the right trade — and that set is large enough to justify the work.

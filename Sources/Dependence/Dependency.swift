@@ -1,0 +1,160 @@
+//
+//  Dependency.swift
+//  Dependence
+//
+//  The `@Dependency(\.foo)` property wrapper.
+//
+
+import Foundation
+#if canImport(SwiftUI)
+import SwiftUI
+#endif
+
+/// Reads a dependency value from the active ``DependencyValues``.
+///
+/// Two construction forms:
+///
+/// ```swift
+/// @Dependency(\.apiClient)        var api
+/// @Dependency(test: APIClient.self) var api  // interface-only modules
+/// ```
+///
+/// The first uses a `KeyPath<DependencyValues, Value>` — this is the
+/// canonical form because it picks up extensions declared via
+/// `@DependencyEntry`. The second form is reserved for interface-only
+/// `TestDependencyKey` lookups where no key path is in scope.
+///
+/// Inside SwiftUI views, `@Dependency` is also a `DynamicProperty`: it reads
+/// from `@Environment(\.dependencies)` first, falling back to the TaskLocal
+/// container. This means subtree overrides via `.dependencies { … }` are
+/// honored by the view tree's normal invalidation rules — no parallel system.
+///
+/// The SwiftUI environment is only consulted when SwiftUI actually drives the
+/// wrapper (i.e. when it is attached to a `View` / `ViewModifier`). When the
+/// wrapper lives on a non-View host such as an `@Observable` class, SwiftUI
+/// never invokes ``DynamicProperty/update()`` and the environment is never
+/// touched — avoiding the runtime warning
+/// "Accessing Environment<…>'s value outside of being installed on a View".
+/// Non-View hosts always resolve via the `@TaskLocal`-bound container, which
+/// is what ``withDependencies(_:operation:)-(_,_)`` mutates.
+@propertyWrapper
+public struct Dependency<Value>: Sendable {
+    @usableFromInline
+    enum KeySource: Sendable {
+        case keyPath(@Sendable (DependencyValues) -> Value)
+        case keyType(@Sendable (DependencyValues) -> Value)
+    }
+
+    @usableFromInline
+    let source: KeySource
+
+    #if canImport(SwiftUI)
+    /// Stored `@Environment` read. Only ever accessed from `update()`, where
+    /// SwiftUI guarantees the wrapper is properly installed on a View. We
+    /// never read this from `wrappedValue` — doing so off-View would emit the
+    /// SwiftUI runtime warning and return the default value anyway.
+    @Environment(\.dependencies)
+    @usableFromInline
+    var _environmentValues: DependencyValues
+
+    /// Reference cell shared across copies of this `Dependency` value.
+    /// `update()` writes the latest SwiftUI environment snapshot here;
+    /// `wrappedValue` reads it. When the wrapper is on a non-View host
+    /// (`update()` is never invoked), the cell stays `nil` and the SwiftUI
+    /// environment is bypassed entirely.
+    @usableFromInline
+    let _environmentSnapshot: EnvironmentSnapshot = .init()
+
+    /// Heap cell for the SwiftUI environment snapshot.
+    ///
+    /// Writes happen from SwiftUI's MainActor-bound view-evaluation pass
+    /// (`update()`); reads happen from `wrappedValue` on whichever isolation
+    /// the caller runs on. We synchronise through `Locked` so the
+    /// `Optional<DependencyValues>` discriminator and the dictionary's COW
+    /// pointer always publish atomically — Swift 6's memory model does not
+    /// guarantee atomicity for plain stored properties even on aligned
+    /// pointer-sized values. The lock is uncontended on the hot path
+    /// (single-writer / many-reader) and the cost is negligible compared to
+    /// the dictionary lookup that follows.
+    @usableFromInline
+    final class EnvironmentSnapshot: Sendable {
+        @usableFromInline
+        let values: Locked<DependencyValues?> = .init(nil)
+
+        @usableFromInline
+        init() {}
+    }
+    #endif
+
+    /// Resolve the value at access time from the active container.
+    ///
+    /// The resolution order is:
+    /// 1. SwiftUI `@Environment(\.dependencies)` if SwiftUI has driven this
+    ///    wrapper (i.e. `update()` has run) **and** the captured container
+    ///    actually carries overrides — for views inside a
+    ///    `.dependencies { … }` subtree.
+    /// 2. The `@TaskLocal`-bound ``DependencyValues/_current`` if it carries
+    ///    explicit overrides — a ``withDependencies(_:operation:)-(_,_)``
+    ///    block in scope always wins.
+    /// 3. The top of the SwiftUI subtree stack — for non-View hosts (e.g.
+    ///    `@Observable` view models) inside a `.dependencies { … }` subtree
+    ///    that don't run `update()`.
+    /// 4. The empty `_current`, which falls through to each key's
+    ///    `liveValue`/`previewValue`/`testValue`.
+    public var wrappedValue: Value {
+        let active: DependencyValues
+        #if canImport(SwiftUI)
+        if
+            let snapshot = _environmentSnapshot.values.withLock({ $0 }),
+            !snapshot.overrides.isEmpty
+        {
+            active = snapshot
+        } else if !DependencyValues._current.overrides.isEmpty {
+            active = DependencyValues._current
+        } else if
+            let subtree = DependencyValues._subtreeOverride,
+            !subtree.overrides.isEmpty
+        {
+            active = subtree
+        } else {
+            active = DependencyValues._current
+        }
+        #else
+        active = DependencyValues._current
+        #endif
+        switch source {
+        case .keyPath(let read), .keyType(let read):
+            return read(active)
+        }
+    }
+
+    /// Construct from a key path — the canonical form.
+    ///
+    /// `KeyPath` is a generic class without an unconditional `Sendable`
+    /// conformance in Swift 6, but reading through one is a pure function of
+    /// immutable data. We wrap it in an `UncheckedSendable` box for the
+    /// closure capture; reads through the key path remain thread-safe.
+    public init(_ keyPath: KeyPath<DependencyValues, Value>) {
+        let box = UncheckedSendable(keyPath)
+        self.source = .keyPath { values in values[keyPath: box.value] }
+    }
+
+    /// Construct directly from a `TestDependencyKey` type (interface-only).
+    public init<K: TestDependencyKey>(test keyType: K.Type) where K.Value == Value {
+        self.source = .keyType { values in values[test: K.self] }
+    }
+}
+
+#if canImport(SwiftUI)
+extension Dependency: DynamicProperty {
+    /// Called by SwiftUI on every view-evaluation pass when the wrapper is
+    /// installed on a `View` / `ViewModifier`. Capturing the environment
+    /// here — and **only** here — makes the SwiftUI subtree-override path
+    /// work for views without paying for it (or warning about it) when the
+    /// wrapper lives on a non-View host such as an `@Observable` class.
+    public mutating func update() {
+        let snapshot = _environmentValues
+        _environmentSnapshot.values.withLock { $0 = snapshot }
+    }
+}
+#endif
