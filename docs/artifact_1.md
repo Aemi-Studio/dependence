@@ -1,5 +1,10 @@
 # A type-driven dependency injection system for Swift 6.2
 
+> Historical design research. This document predates the implemented
+> `Dependence` package and may use older Swift version assumptions, the
+> provisional name "Stitch", or API sketches that were not shipped. The README
+> and DocC pages are the canonical package documentation.
+
 A new Swift dependency injection library can derive its compile-time correctness from the Swift type system alone — capability protocols, protocol witnesses, phantom-typed scopes, generic constructor injection, and `~Copyable` scope tokens — with macros relegated strictly to ergonomic boilerplate elimination. **This abandons the SafeDI/Needle premise that compile-time graph validation requires a SwiftSyntax-walking analyzer or external CLI codegen.** The trade-off is honest: you cannot prove "the user forgot to register Foo *anywhere* in the program" without whole-program analysis. You can, however, surface every other DI failure mode — wrong scope, missing capability, wrong type, leaked instance, isolation violation — as one of three actionable Swift compiler diagnostics: `missing_argument_for_parameter`, `type_does_not_conform_to_protocol`, or `cannot_convert_argument_value`. That is the highest signal-to-noise ratio Swift's compiler is capable of producing, and it is reachable today in pure Swift 6.2 with strict concurrency, no SwiftSyntax codegen, and full library-evolution compatibility.
 
 The prior research established the field. This report extends it: it specifies the architectural shape, names the trade-offs the prior survey deferred, and resolves the six open questions. Section 17 contains the concrete API sketch and naming proposal; Sections 1–16 build the case for it.

@@ -24,7 +24,7 @@ import Foundation
 /// Overrides propagate to child structured tasks (`async let`, `withTaskGroup`'s
 /// `addTask`) automatically because they ride on `@TaskLocal`.
 /// `Task.detached` and unstructured callbacks (Combine, GCD,
-/// `NotificationCenter`) do **not** inherit; use ``captureDependencies(_:)``
+/// `NotificationCenter`) do **not** inherit; use ``captureDependencies()``
 /// to snapshot and rebind across those boundaries.
 @discardableResult
 public func withDependencies<R>(

@@ -46,10 +46,10 @@ package final class PrepareDependenciesState: Sendable {
         }
         var copy = DependencyValues._current
         mutate(&copy)
-        // The TaskLocal can only be set within a `withValue` scope; for the
+        // The TaskLocal can only be set within a `withValue` scope. For the
         // app-lifetime case we take a different path: write each override
-        // straight into the shared cache, then bind the values for the
-        // process via $_current's preserveBaseValue.
+        // straight into the shared cache so future default resolution returns
+        // these prepared values.
         DependencyValues.installInitial(copy)
     }
 

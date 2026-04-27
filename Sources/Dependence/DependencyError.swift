@@ -7,10 +7,15 @@ import Foundation
 
 /// Errors thrown by the dependency system at runtime.
 ///
-/// The library never traps on misconfiguration. Instead it reports issues
-/// through ``IssueReporter`` (which routes to Swift Testing, XCTest, or
-/// `os_log` depending on context) and surfaces failures here so callers can
-/// `catch` them deterministically when needed.
+/// Core resolution paths report issues through ``IssueReporter`` (which routes
+/// to Swift Testing, XCTest, or runtime warnings depending on context) and
+/// surface recoverable failures here so callers can `catch` them
+/// deterministically when needed.
+///
+/// A synthesized `@DependencyClient` default for a non-throwing, non-`Void`
+/// closure still has to trap after reporting because there is no value it can
+/// return. Prefer `throws` for endpoints whose unimplemented path should be
+/// recoverable in tests.
 public enum DependencyError: Error, Sendable {
     /// A `DependencyKey`'s `liveValue` was accessed but no value is registered
     /// in the current context. Carries a human-readable label.

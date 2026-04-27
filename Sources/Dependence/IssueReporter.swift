@@ -6,12 +6,13 @@
 //  current execution context (Swift Testing, XCTest, SwiftUI Preview, plain
 //  runtime) and routes the issue to the appropriate sink.
 //
-//  IMPORTANT: this file deliberately does **not** `import Testing`. On iOS 26 /
-//  macOS 15 `Testing` is always importable, so even a `#if canImport(Testing)`
-//  guard would force the `Dependence` library to link `Testing.framework` at
-//  build time. That framework is only embedded in test bundles, not in app
-//  products, so any executable depending on `Dependence` would fail at launch
-//  with a `dyld: Library not loaded: @rpath/Testing.framework/Testing`.
+//  IMPORTANT: this file deliberately does **not** `import Testing`. On modern
+//  Apple SDKs `Testing` can be importable from non-test targets, so even a
+//  `#if canImport(Testing)` guard would force the `Dependence` library to link
+//  `Testing.framework` at build time. That framework is only embedded in test
+//  bundles, not in app products, so an executable depending on `Dependence`
+//  could fail at launch with
+//  `dyld: Library not loaded: @rpath/Testing.framework/Testing`.
 //
 //  Swift Testing routing is provided by `DependenceTesting`, which is allowed
 //  to link `Testing.framework` because it only ships in test targets. It
@@ -138,13 +139,31 @@ package enum IssueContext: Sendable, Hashable {
     /// 4. otherwise, plain runtime.
     @usableFromInline
     package static var current: IssueContext {
-        if ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1" {
+        #if canImport(ObjectiveC)
+        let isXCTestLoaded = objc_lookUpClass("XCTestCase") != nil
+        #else
+        let isXCTestLoaded = false
+        #endif
+        return resolve(
+            environment: ProcessInfo.processInfo.environment,
+            isSwiftTestingLoaded: _isSwiftTestingLoaded,
+            isXCTestLoaded: isXCTestLoaded
+        )
+    }
+
+    /// Pure resolver used by tests so they do not need to mutate process-wide
+    /// environment variables while Swift Testing is running suites in parallel.
+    @usableFromInline
+    package static func resolve(
+        environment: [String: String],
+        isSwiftTestingLoaded: Bool,
+        isXCTestLoaded: Bool
+    ) -> IssueContext {
+        if environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1" {
             return .preview
         }
-        if _isSwiftTestingLoaded { return .swiftTesting }
-        #if canImport(ObjectiveC)
-        if objc_lookUpClass("XCTestCase") != nil { return .xctest }
-        #endif
+        if isSwiftTestingLoaded { return .swiftTesting }
+        if isXCTestLoaded { return .xctest }
         return .runtime
     }
 

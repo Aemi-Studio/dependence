@@ -26,13 +26,13 @@ public protocol ScopeTag: Sendable {}
 /// compiler error.
 ///
 /// ```swift
-/// let session = ScopeToken<SessionScope>(authenticatedUser: user) {
+/// let session = ScopeToken<SessionScope, AuthenticatedUser>(value: user) {
 ///     // Teardown closure — runs when the scope exits.
 ///     Task { await SessionLogger.flush() }
 /// }
 ///
 /// try await session.enter { borrowing scope in
-///     try await withDependencies({ $0.session = scope.snapshot }) {
+///     try await withDependencies({ $0.session = scope.snapshot() }) {
 ///         try await runAuthenticatedAppShell()
 ///     }
 /// }

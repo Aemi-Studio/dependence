@@ -9,9 +9,8 @@ import Synchronization
 
 /// Internal box that protects a `Sendable` value behind a `Mutex`.
 ///
-/// The Swift 6 `Synchronization.Mutex` ships on every platform we target
-/// (iOS 18+, macOS 15+, plus Linux when the toolchain is built with the
-/// concurrency runtime). We use it in preference to `NSLock`/`os_unfair_lock`
+/// `Synchronization.Mutex` is available in the Swift 6 toolchains this
+/// package targets. We use it in preference to `NSLock`/`os_unfair_lock`
 /// because it is non-reentrant by design (matches our usage), zero-allocation,
 /// and integrates cleanly with `~Copyable` storage.
 @usableFromInline

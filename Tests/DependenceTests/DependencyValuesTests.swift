@@ -21,17 +21,12 @@ struct IssueContextDetectionTests {
 
     @Test("Preview env var wins against an active test framework")
     func previewEnvVarTakesPrecedence() {
-        let key = "XCODE_RUNNING_FOR_PREVIEWS"
-        let prior = ProcessInfo.processInfo.environment[key]
-        setenv(key, "1", 1)
-        defer {
-            if let prior {
-                setenv(key, prior, 1)
-            } else {
-                unsetenv(key)
-            }
-        }
-        #expect(IssueContext.current == .preview)
+        let context = IssueContext.resolve(
+            environment: ["XCODE_RUNNING_FOR_PREVIEWS": "1"],
+            isSwiftTestingLoaded: true,
+            isXCTestLoaded: true
+        )
+        #expect(context == .preview)
     }
 }
 

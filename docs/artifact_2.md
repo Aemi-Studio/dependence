@@ -1,5 +1,10 @@
 # Designing a Dependency Injection system for Swift in 2026
 
+> Historical design research. This document records the market and architecture
+> analysis that informed `Dependence`; it is not the canonical API or behavior
+> reference for the shipped package. Use the README and DocC pages for current
+> documentation.
+
 The strongest convergent recommendation across Apple's sample code, Airbnb, Lyft, Uber, Point-Free, and the most influential Swift writers (Seemann, Sundell, van der Lee, Long, Williams/Celis, Jabrayilov, Wals, Fatbobman) is a hybrid: **interface/implementation module split enforced by SPM, concrete witness structs as service types, key-path keyed registration with required default values, and `@TaskLocal`-scoped overrides for tests and previews**. This pattern matches what `swift-dependencies` ships, what Apple's `@Environment`/`@Entry` system encodes, and what large modular shops have independently arrived at — yet none of the existing libraries hit every requirement for a from-scratch system aimed at modular Swift 6 codebases. Compile-time graph validation, available only in Needle and SafeDI today, is the missing piece worth building. The decision space is no longer "container vs. no container" but rather "how much of Dagger's compile-time graph correctness can we absorb into Swift's type system without paying SwiftSyntax build-time costs everywhere?" This report maps the design space, names the battle-tested primitives, and distills the open questions a from-scratch implementation must resolve.
 
 ## Theoretical foundations matter more than they appear
