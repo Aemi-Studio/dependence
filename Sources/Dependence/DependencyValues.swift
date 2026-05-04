@@ -9,6 +9,7 @@
 //
 
 import Foundation
+import Synchronization
 
 /// The dependency container. A `Sendable` value type that you mutate via
 /// ``withDependencies(_:operation:)-(_,_)`` and read through
@@ -36,7 +37,7 @@ public struct DependencyValues: Sendable {
     /// Process-wide cache of resolved values. Shared across all
     /// `DependencyValues` instances. Only used when no override is set.
     @usableFromInline
-    static let cache: Locked<[CacheKey: any Sendable]> = .init([:])
+    static let cache: Mutex<[CacheKey: any Sendable]> = Mutex([:])
 
     /// One entry on the SwiftUI subtree-override stack.
     @usableFromInline
@@ -70,7 +71,7 @@ public struct DependencyValues: Sendable {
     /// stack only matters for non-View hosts (e.g. `@Observable` view
     /// models) that have no `@Environment` pipeline of their own.
     @usableFromInline
-    static let _subtreeStack: Locked<[SubtreeEntry]> = .init([])
+    static let _subtreeStack: Mutex<[SubtreeEntry]> = Mutex([])
 
     /// Convenience read of the top of the subtree stack.
     @usableFromInline
@@ -104,6 +105,33 @@ public struct DependencyValues: Sendable {
     /// `withDependencies` always wins. The subtree stack is a lower-priority
     /// fallback for non-View hosts that have no `@Environment` pipeline.
     public static var current: DependencyValues {
+        resolveActive(environmentSnapshot: nil)
+    }
+
+    /// Single source of truth for the active-container resolution chain.
+    ///
+    /// Both ``current`` (non-`View` hosts) and ``Dependency``'s
+    /// `wrappedValue` (which adds a SwiftUI environment-snapshot prefix
+    /// when SwiftUI has driven `update()`) defer to this helper. Keeping
+    /// the precedence in one place prevents the two read paths from
+    /// silently diverging when one of them is updated.
+    ///
+    /// Precedence:
+    ///
+    /// 1. `environmentSnapshot` if it carries explicit overrides — only
+    ///    set for `@Dependency` wrappers installed on a SwiftUI `View`
+    ///    after `DynamicProperty.update()` has run.
+    /// 2. Task-local `_current` if it carries explicit overrides.
+    /// 3. Top of the subtree stack if any subtree is active.
+    /// 4. Empty `_current`, which falls through to context defaults.
+    @usableFromInline
+    static func resolveActive(environmentSnapshot: DependencyValues?) -> DependencyValues {
+        if
+            let snapshot = environmentSnapshot,
+            !snapshot.overrides.isEmpty
+        {
+            return snapshot
+        }
         if !_current.overrides.isEmpty {
             return _current
         }

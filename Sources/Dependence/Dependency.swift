@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import Synchronization
 #if canImport(SwiftUI)
 import SwiftUI
 #endif
@@ -79,7 +80,7 @@ public struct Dependency<Value>: Sendable {
     @usableFromInline
     final class EnvironmentSnapshot: Sendable {
         @usableFromInline
-        let values: Locked<DependencyValues?> = .init(nil)
+        let values: Mutex<DependencyValues?> = Mutex(nil)
 
         @usableFromInline
         init() {}
@@ -102,25 +103,11 @@ public struct Dependency<Value>: Sendable {
     /// 4. The empty `_current`, which falls through to each key's
     ///    `liveValue`/`previewValue`/`testValue`.
     public var wrappedValue: Value {
-        let active: DependencyValues
         #if canImport(SwiftUI)
-        if
-            let snapshot = _environmentSnapshot.values.withLock({ $0 }),
-            !snapshot.overrides.isEmpty
-        {
-            active = snapshot
-        } else if !DependencyValues._current.overrides.isEmpty {
-            active = DependencyValues._current
-        } else if
-            let subtree = DependencyValues._subtreeOverride,
-            !subtree.overrides.isEmpty
-        {
-            active = subtree
-        } else {
-            active = DependencyValues._current
-        }
+        let snapshot = _environmentSnapshot.values.withLock { $0 }
+        let active = DependencyValues.resolveActive(environmentSnapshot: snapshot)
         #else
-        active = DependencyValues._current
+        let active = DependencyValues.resolveActive(environmentSnapshot: nil)
         #endif
         switch source {
         case .keyPath(let read), .keyType(let read):

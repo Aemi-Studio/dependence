@@ -33,6 +33,7 @@ macro expansion contracts, and known boundaries, read <doc:Behavior>.
 
 ### Articles
 - <doc:Behavior>
+- <doc:Lifetime>
 
 ### Essentials
 - ``DependencyValues``

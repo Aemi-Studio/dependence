@@ -66,7 +66,10 @@ struct ScopeTokenTests {
         )
         var didThrow = false
         do {
-            try await token.enter { _ -> Int in throw Boom() }
+            try await token.enter { _ -> Int in
+                await Task.yield()
+                throw Boom()
+            }
         } catch is Boom {
             didThrow = true
         } catch {

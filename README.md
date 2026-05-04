@@ -221,13 +221,15 @@ let continuation = captureDependencies()
 
 DispatchQueue.global().async {
     continuation.yield {
-        // Reads are rebound to the captured TaskLocal dependency values.
+        // Reads are rebound to the captured dependency values.
     }
 }
 ```
 
-`captureDependencies()` captures the active task-local values. It does not
-capture a SwiftUI `@Environment` snapshot by itself.
+`captureDependencies()` captures `DependencyValues.current`. That includes an
+active task-local override, or the latest `.dependencies { }` SwiftUI subtree
+fallback when no task-local override is active. It does not inspect arbitrary
+SwiftUI `@Environment` values by itself.
 
 ## SwiftUI Behavior
 
@@ -619,12 +621,35 @@ Non-`Sendable` services should be wrapped behind actors, isolated to the main
 actor, or represented by `Sendable` witnesses. Avoid storing arbitrary
 non-thread-safe reference types directly in `DependencyValues`.
 
+## Lifetime and Hotload
+
+Different APIs answer different questions about *time* — when a value enters
+the system, when it is sampled, when it leaves, and what happens if you try
+to swap it. The full contract — including the hotload matrix per read site,
+identity-warning for non-`View` hosts, and the recommended snapshot-at-
+construction pattern for long-lived view models — lives in the DocC article
+[`Lifetime.md`](Sources/Dependence/Resources/Documentation.docc/Lifetime.md).
+
+Quick reference:
+
+- `prepareDependencies` / `Scene.dependencies` — process-lifetime,
+  first-call-wins.
+- `View.dependencies` — subtree-lifetime, hotloadable for `View` reads.
+- `withDependencies` — task-local, hotloadable for the operation.
+- `captureDependencies` — `Sendable` snapshot for crossing escaping
+  boundaries.
+- `Provider` — fresh per call (factory body decides freshness).
+- `Lazy` — one-shot, **not** hotloadable.
+- `ScopeToken` — generational lifetime with deterministic teardown.
+
 ## Project Documentation
 
 DocC documentation starts at
 `Sources/Dependence/Resources/Documentation.docc/Dependence.md`, with the
 behavior reference in
-`Sources/Dependence/Resources/Documentation.docc/Behavior.md`.
+`Sources/Dependence/Resources/Documentation.docc/Behavior.md` and the
+lifetime/hotload contract in
+`Sources/Dependence/Resources/Documentation.docc/Lifetime.md`.
 
 The files in `docs/artifact_*.md` are historical design research. They are
 useful background, but the README and DocC pages are the canonical description

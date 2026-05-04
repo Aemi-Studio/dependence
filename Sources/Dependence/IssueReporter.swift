@@ -20,6 +20,7 @@
 //
 
 import Foundation
+import Synchronization
 #if canImport(ObjectiveC)
 import ObjectiveC
 #endif
@@ -94,20 +95,45 @@ public enum IssueReporter {
     /// Register a handler invoked by `reportIssue(_:)` before the built-in
     /// fallbacks. Handlers are tried in registration order.
     public static func register(_ handler: @escaping Handler) {
-        _storage.withLock { $0.append(handler) }
+        _storage.withLock { state in
+            state.handlers.append(handler)
+            // Publish a fresh immutable snapshot. Readers grab it through
+            // `_handlers()` without copying the underlying array on every
+            // `reportIssue` call.
+            state.snapshot = state.handlers
+        }
     }
 
     /// Snapshot of currently-registered handlers. Exposed `@usableFromInline`
     /// so the inlined `reportIssue` body can iterate them.
+    ///
+    /// The returned array shares storage with the published snapshot — Swift
+    /// arrays are value types with COW semantics, so a read on the hot path
+    /// is one locked pointer fetch with no allocation.
     @usableFromInline
     static func _handlers() -> [Handler] {
-        _storage.withLock { $0 }
+        _storage.withLock { $0.snapshot }
     }
 
-    /// Process-wide handler list. Same locking pattern as
+    @usableFromInline
+    struct State: Sendable {
+        @usableFromInline
+        var handlers: [Handler] = []
+
+        /// Cached read-only snapshot republished on every `register`. Keeps
+        /// `reportIssue` reads cheap when handler registration is rare
+        /// (the typical pattern: one bootstrap call per process).
+        @usableFromInline
+        var snapshot: [Handler] = []
+
+        @usableFromInline
+        init() {}
+    }
+
+    /// Process-wide handler state. Same locking pattern as
     /// `DependencyValues.cache`.
     @usableFromInline
-    static let _storage: Locked<[Handler]> = .init([])
+    static let _storage: Mutex<State> = Mutex(State())
 }
 
 // MARK: - Context detection

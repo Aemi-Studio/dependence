@@ -89,8 +89,10 @@ Unstructured boundaries do not inherit:
 Use ``captureDependencies()`` before crossing such a boundary, then call
 `DependencyContinuation.yield` on the other side.
 
-`captureDependencies()` captures the active task-local values. It does not
-capture SwiftUI environment snapshots by itself.
+`captureDependencies()` captures ``DependencyValues/current``. That includes a
+task-local override when one is active, or the latest `.dependencies { }`
+SwiftUI subtree fallback when no task-local override is active. It does not
+inspect arbitrary SwiftUI `@Environment` values by itself.
 
 ## Read Precedence
 
