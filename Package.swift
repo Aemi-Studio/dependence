@@ -298,6 +298,23 @@ let package = Package(
             path: "Tests/DependenceMacrosTests",
             swiftSettings: .strict
         ),
+        // Compile-only regression target that pins the @DependencyClient
+        // ↔ `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` interaction. This
+        // target sets `defaultIsolation(MainActor.self)` so every
+        // declaration in it is implicitly `@MainActor` — the same shape as
+        // an Xcode 26 app module built with the default-isolation knob
+        // flipped. If `@DependencyClient` stops marking its synthesized
+        // members `nonisolated`, the fixtures in this target stop
+        // compiling.
+        .testTarget(
+            name: "DependenceMacrosMainActorTests",
+            dependencies: [
+                "Dependence",
+                "DependenceMacros",
+            ],
+            path: "Tests/DependenceMacrosMainActorTests",
+            swiftSettings: .strict + [.defaultIsolation(MainActor.self)]
+        ),
         .testTarget(
             name: "DependenceTestingTests",
             dependencies: [

@@ -397,6 +397,36 @@ unimplemented closures:
 - `static var unimplemented` is generated only when every stored property can
   be defaulted.
 
+The synthesized `init` and `static var unimplemented` are always emitted with
+the `nonisolated` keyword. This is what makes `@DependencyClient` usable from
+modules built with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` (the Xcode 26
+default-isolation build setting). Without `nonisolated`, every declaration in
+such a module — including the macro-synthesized initializer and the closure
+defaults it bakes into the init signature — would be inferred `@MainActor`,
+and any preview/test witness mounted off the main actor would fail to compile:
+
+```swift
+// In a module compiled with -default-isolation MainActor:
+@DependencyClient
+struct SearchClient: Sendable {
+    var search: @Sendable (String) async throws -> [String]
+}
+
+extension SearchClient {
+    // Without the `nonisolated init` synthesis this fails with:
+    //   error: main actor-isolated default value in a nonisolated context
+    nonisolated static let preview = Self(
+        search: { _ in ["preview"] }
+    )
+}
+```
+
+The witness is conceptually `Sendable` — its init only assigns Sendable
+closures to stored properties — so the `nonisolated` stamp is sound by
+construction. The compiler still enforces actor isolation on the closure
+*bodies* the caller supplies, so this does not weaken any guarantee at the
+call site.
+
 ### `@Dependencies`
 
 Use on `@Observable` view models and similar classes:
