@@ -115,11 +115,21 @@ extension DependencyClientMacro: MemberMacro {
             .map { "self.\($0.name) = \($0.name)" }
             .joined(separator: "\n        ")
 
-        let initPrefix = accessLevel.map { "\($0) " } ?? ""
+        let accessPrefix = accessLevel.map { "\($0) " } ?? ""
+        // `nonisolated` is always emitted so the synthesized members don't
+        // pick up the surrounding type's actor isolation. This matters in
+        // modules built with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`
+        // (Xcode 26+ default-isolation knob): without it, the synthesized
+        // `init` is inferred `@MainActor` and any
+        // `nonisolated static let preview = Self(...)` site fails to
+        // compile. The witness is conceptually Sendable — its init only
+        // assigns Sendable closures to stored properties — so isolating it
+        // to any actor would be incorrect anyway.
+        let memberPrefix = "nonisolated \(accessPrefix)"
 
         let initDecl: DeclSyntax =
             """
-            \(raw: initPrefix)init(\(raw: initParams)) {
+            \(raw: memberPrefix)init(\(raw: initParams)) {
                 \(raw: initAssignments)
             }
             """
@@ -127,7 +137,7 @@ extension DependencyClientMacro: MemberMacro {
         if properties.allSatisfy({ $0.isClosure }) {
             let unimplementedDecl: DeclSyntax =
                 """
-                \(raw: initPrefix)static var unimplemented: Self { Self() }
+                \(raw: memberPrefix)static var unimplemented: Self { Self() }
                 """
             return [initDecl, unimplementedDecl]
         }
