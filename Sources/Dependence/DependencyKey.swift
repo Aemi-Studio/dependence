@@ -9,10 +9,11 @@
 
 import Foundation
 
-/// A key shape used in test/preview contexts only. Interface modules can
-/// declare a `TestDependencyKey` for a service whose live implementation
-/// lives in a separate module — the live module then conforms the same key
-/// to ``DependencyKey``.
+/// A key shape used in test/preview contexts only.
+///
+/// Interface modules can declare a `TestDependencyKey` for a service whose
+/// live implementation lives in a separate module — the live module then
+/// conforms the same key to ``DependencyKey``.
 ///
 /// Splitting the protocols this way means feature interface modules never
 /// need to import their `Live` package: tests and previews work against the
@@ -37,15 +38,17 @@ public protocol TestDependencyKey: Sendable {
 }
 
 extension TestDependencyKey {
-    /// Default: previews fall back to `testValue`. Test-aware previews surface
-    /// missing previews loudly while ordinary live previews provide a custom
-    /// `previewValue`.
+    /// Default: previews fall back to `testValue`.
+    ///
+    /// Test-aware previews surface missing previews loudly while ordinary
+    /// live previews provide a custom `previewValue`.
     public static var previewValue: Value { Self.testValue }
 }
 
-/// A key whose live implementation is shipped alongside the protocol. Used
-/// for keys defined in app or impl modules where the live value is already
-/// available.
+/// A key whose live implementation is shipped alongside the protocol.
+///
+/// Used for keys defined in app or impl modules where the live value is
+/// already available.
 public protocol DependencyKey<Value>: TestDependencyKey {
     /// The production value. Lazily evaluated on first resolution.
     static var liveValue: Value { get }
@@ -53,8 +56,32 @@ public protocol DependencyKey<Value>: TestDependencyKey {
 
 extension DependencyKey {
     /// Default: tests fall back to the live value if `testValue` isn't
-    /// overridden. Most witnesses should override `testValue` with an
-    /// unimplemented sentinel — but a key whose live value is already a
-    /// pure value type (e.g. a `Calendar`) doesn't need to.
-    public static var testValue: Value { Self.liveValue }
+    /// overridden.
+    ///
+    /// Under an active test context (Swift Testing or XCTest) the fallback
+    /// **reports an issue** before returning: silently running live
+    /// implementations in tests is the classic trap this library exists to
+    /// close — a test that "passes" against the network is worse than a
+    /// loud one. Provide an explicit `testValue` (typically an
+    /// `unimplemented` witness) or override the key in the test. A key
+    /// whose live value is a pure value type (e.g. a `Calendar`) can keep
+    /// the fallback and silence the report with `testValue = liveValue`
+    /// spelled out.
+    ///
+    /// The report fires at most once per key per process — resolution
+    /// results are cached.
+    public static var testValue: Value {
+        switch IssueContext.current {
+            case .swiftTesting, .xctest:
+                reportIssue(
+                    "\(Self.self) has no testValue — tests are silently using its liveValue. "
+                        + "Provide an explicit testValue (e.g. an unimplemented witness), override the "
+                        + "key with withDependencies/.dependencies, or spell out testValue = liveValue "
+                        + "if the live value is genuinely test-safe."
+                )
+            case .preview, .runtime:
+                break
+        }
+        return Self.liveValue
+    }
 }

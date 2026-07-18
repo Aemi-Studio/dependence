@@ -263,15 +263,17 @@ public struct DependencyValues: Sendable {
         }
         // Phase 2: compute the default *outside* the lock so a default that
         // reads another `@Dependency` (and re-enters the cache lock) cannot
-        // deadlock.
-        let computed: K.Value
-        switch context {
-            case .runtime:
-                computed = K.liveValue
-            case .preview:
-                computed = K.previewValue
-            case .swiftTesting, .xctest:
-                computed = K.testValue
+        // deadlock. The cycle guard only runs on this cold path — cache hits
+        // never touch it.
+        let computed: K.Value = withCycleDetection(K.self) {
+            switch context {
+                case .runtime:
+                    K.liveValue
+                case .preview:
+                    K.previewValue
+                case .swiftTesting, .xctest:
+                    K.testValue
+            }
         }
         // Phase 3: locked install with double-check. If a racing caller won,
         // return its value so first-resolution semantics stay deterministic.
@@ -286,17 +288,44 @@ public struct DependencyValues: Sendable {
 
     @usableFromInline
     static func resolveTest<K: TestDependencyKey>(_ keyType: K.Type) -> K.Value {
-        let context = IssueContext.current
+        resolveTest(keyType, context: IssueContext.current)
+    }
+
+    /// Context-injectable core of ``resolveTest(_:)``.
+    ///
+    /// Package-visible so tests can pin the `.runtime` branch without faking
+    /// process-wide context detection.
+    @usableFromInline
+    package static func resolveTest<K: TestDependencyKey>(
+        _ keyType: K.Type,
+        context: IssueContext
+    ) -> K.Value {
         let cacheKey = CacheKey(id: ObjectIdentifier(K.self), context: context)
         if let cached = cache.withLock({ $0[cacheKey] as? K.Value }) {
             return cached
         }
-        let computed: K.Value
-        switch context {
-            case .preview:
-                computed = K.previewValue
-            case .runtime, .swiftTesting, .xctest:
-                computed = K.testValue
+        let computed: K.Value = withCycleDetection(K.self) {
+            switch context {
+                case .preview:
+                    return K.previewValue
+                case .runtime:
+                    // Fail closed, loudly: an interface-only key resolving in a
+                    // live process means the composition root never registered
+                    // the live implementation — the process is about to run on
+                    // test placeholders. Report before falling back so the
+                    // wiring bug is visible instead of silently degraded.
+                    let error = DependencyError.missingLiveValue(String(describing: K.self))
+                    reportIssue(
+                        "\(error.localizedDescription) The key is interface-only "
+                            + "(TestDependencyKey) and this process is running in the live (.runtime) "
+                            + "context — falling back to its testValue. Register the live witness at "
+                            + "the composition root (prepareDependencies / Scene.dependencies) before "
+                            + "the first resolution."
+                    )
+                    return K.testValue
+                case .swiftTesting, .xctest:
+                    return K.testValue
+            }
         }
         return cache.withLock { entries in
             if let cached = entries[cacheKey] as? K.Value {
@@ -305,6 +334,59 @@ public struct DependencyValues: Sendable {
             entries[cacheKey] = computed
             return computed
         }
+    }
+
+    // MARK: - Cycle detection
+
+    /// One frame of the in-flight default-computation stack.
+    @usableFromInline
+    struct ResolutionFrame: Sendable {
+        @usableFromInline
+        let id: ObjectIdentifier
+
+        @usableFromInline
+        let label: String
+
+        @usableFromInline
+        init(id: ObjectIdentifier, label: String) {
+            self.id = id
+            self.label = label
+        }
+    }
+
+    /// Keys whose default values are currently being computed on this task
+    /// tree.
+    ///
+    /// Consulted **only** on the compute path (cache misses), so the hot
+    /// cached-read path never reads the task-local. Tiny N — a plain array
+    /// beats set hashing.
+    @TaskLocal
+    @usableFromInline
+    static var _inFlightResolutions: [ResolutionFrame] = []
+
+    /// Runs `compute` with `K` pushed onto the in-flight stack; traps with
+    /// the full key chain when `K` is already being computed.
+    ///
+    /// A cycle has no recoverable value — the previous behavior was an
+    /// undiagnosed stack overflow. A `reportIssue` (so test/CI logs capture
+    /// the chain) followed by a clear `fatalError` beats both.
+    @usableFromInline
+    static func withCycleDetection<K, V>(_ keyType: K.Type, _ compute: () -> V) -> V {
+        let stack = _inFlightResolutions
+        let id = ObjectIdentifier(K.self)
+        let label = String(describing: K.self)
+        if stack.contains(where: { $0.id == id }) {
+            let error = DependencyError.cycle(stack.map(\.label) + [label])
+            reportIssue(error.localizedDescription)
+            fatalError(
+                "\(error.localizedDescription) A default value that transitively resolves its own "
+                    + "key has no recoverable result (the previous behavior was a stack overflow). "
+                    + "Break the cycle with Provider/Lazy indirection or restructure the witnesses."
+            )
+        }
+        var next = stack
+        next.append(ResolutionFrame(id: id, label: label))
+        return $_inFlightResolutions.withValue(next) { compute() }
     }
 
     // MARK: - Test reset
