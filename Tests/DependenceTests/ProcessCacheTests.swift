@@ -30,11 +30,21 @@ extension ProcessGlobalStateSuites {
             static var testValue: Switchable { Switchable(value: "test") }
         }
 
+        /// Reference type whose default constructs a fresh instance on every
+        /// evaluation — the racing-first-resolution test asserts the cache
+        /// still hands every reader one shared identity.
+        private final class SharedBox: Sendable {}
+
+        private enum SharedBoxKey: DependencyKey {
+            static var liveValue: SharedBox { SharedBox() }
+            static var testValue: SharedBox { SharedBox() }
+        }
+
         private func resetRuntime() {
             DependencyRuntimeState.resetForTesting()
         }
 
-        @Test("prepareDependencies first call seeds the cache for subsequent reads")
+        @Test("prepareDependencies first call seeds the cache; the value is sticky across reads")
         func firstCallSeedsCache() {
             resetRuntime()
             defer { resetRuntime() }
@@ -47,6 +57,11 @@ extension ProcessGlobalStateSuites {
             // hits the cache populated by `installInitial`.
             #expect(DependencyValues()[SwitchableKey.self] == Switchable(value: "prepared"))
             #expect(DependencyValues.current[SwitchableKey.self] == Switchable(value: "prepared"))
+            // Sticky: repeated reads never fall back to default re-resolution
+            // (formerly the separate cacheValueStickyAcrossReads test).
+            for _ in 0..<8 {
+                #expect(DependencyValues()[SwitchableKey.self] == Switchable(value: "prepared"))
+            }
         }
 
         @Test("Second prepareDependencies call reports an issue and is ignored")
@@ -71,20 +86,6 @@ extension ProcessGlobalStateSuites {
             #expect(DependencyValues()[SwitchableKey.self] == Switchable(value: "first"))
         }
 
-        @Test("Cached value resists later default re-resolution")
-        func cacheValueStickyAcrossReads() {
-            resetRuntime()
-            defer { resetRuntime() }
-
-            prepareDependencies {
-                $0[SwitchableKey.self] = Switchable(value: "sticky")
-            }
-
-            for _ in 0..<8 {
-                #expect(DependencyValues()[SwitchableKey.self] == Switchable(value: "sticky"))
-            }
-        }
-
         @Test("withDependencies still wins inside its scope, then cache value reappears")
         func withDependenciesShadowsButDoesNotEvictCache() {
             resetRuntime()
@@ -103,6 +104,30 @@ extension ProcessGlobalStateSuites {
             // The scoped override is task-local; leaving the operation restores
             // the cached prepared value, not the test default.
             #expect(DependencyValues.current[SwitchableKey.self] == Switchable(value: "base"))
+        }
+
+        @Test("Concurrent first resolutions observe one reference identity")
+        func concurrentFirstResolutionSharesIdentity() async {
+            resetRuntime()
+            defer { resetRuntime() }
+
+            // 32 tasks race the very first resolution of a reference-typed
+            // key whose default constructs a fresh instance per evaluation.
+            // The double-checked install must make every task observe the
+            // single winning instance — a torn cache would leak N identities.
+            let identities = await withTaskGroup(of: ObjectIdentifier.self) { group in
+                for _ in 0..<32 {
+                    group.addTask {
+                        ObjectIdentifier(DependencyValues()[SharedBoxKey.self])
+                    }
+                }
+                var collected: Set<ObjectIdentifier> = []
+                for await id in group {
+                    collected.insert(id)
+                }
+                return collected
+            }
+            #expect(identities.count == 1)
         }
 
         @Test("prepareDependencies inside a withDependencies scope reports the leaking overrides (F6)")

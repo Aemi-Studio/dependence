@@ -10,23 +10,26 @@
 
 import Dependence
 import DependenceTesting
-@testable import ExampleStressAppCore
 import Foundation
 import Testing
+
+@testable import ExampleStressAppCore
 
 // MARK: - Resolution coverage
 
 @Suite("Stress: registry resolution")
 struct StressRegistryTests {
-    @Test("Every registered key resolves to its testValue under a Suite-level trait",
-          .dependencies { _ in })
+    @Test(
+        "Every registered key resolves to its testValue under a Suite-level trait",
+        .dependencies { _ in })
     func everyKeyResolves() {
         let v = DependencyValues.current
         // Under Swift Testing the resolver returns `testValue`, which the
-        // registry doesn't override — so each one falls back to the
-        // unimplemented witness from `@DependencyClient`. Just touching them
-        // proves the keys are wired into the values bag without raising.
-        // Reading via key paths exercises the macro-generated subscripts.
+        // registry wires explicitly (via `test:`) to each type's
+        // unimplemented witness. Just touching them proves the keys are
+        // wired into the values bag without raising — the witnesses only
+        // report when *invoked*. Reading via key paths exercises the
+        // macro-generated subscripts.
         _ = v.authHTTPClient
         _ = v.feedHTTPClient
         _ = v.profileHTTPClient
@@ -65,8 +68,9 @@ struct StressOverrideTests {
                 query: { _ in ["unit-test-hit-1", "unit-test-hit-2"] },
                 suggestions: { _ in [] }
             )
-            // We need a session token for the auth.signIn → session.beginSession
-            // hop to succeed.
+            // The live search path also tracks through analytics; the auth
+            // client override is kept for parity with the live auth witness
+            // installed below (its endpoints are never invoked here).
             $0.authHTTPClient = .preview
             $0.analyticsHTTPClient = .preview
         } operation: {
@@ -180,6 +184,18 @@ struct StressBenchTests {
         #expect(stats.totalNanos > 0)
         #expect(stats.nanosPerOp.isFinite)
         #expect(stats.opsPerSecond > 0)
+    }
+
+    @Test("Cached-read path stays under a conservative per-op ceiling")
+    func resolveBenchStaysUnderCeiling() {
+        let stats = StressBench.resolveAllKeys(iterations: 512)
+        // Regression tripwire for the context-detection hot path, not a
+        // perf gate. Sizing: post-fix reality is ~185 ns/op in release and
+        // ~730 ns/op in debug on a fast arm64 machine; the pre-fix cost
+        // (ProcessInfo.environment bridging per resolution) was ~33,500
+        // ns/op in RELEASE. 10 us/op is ~14x debug headroom for slow CI
+        // hardware while still sitting 3x below the regressed cost.
+        #expect(stats.nanosPerOp < 10_000)
     }
 
     @Test("nestedOverrides reports a non-zero op count and total time")

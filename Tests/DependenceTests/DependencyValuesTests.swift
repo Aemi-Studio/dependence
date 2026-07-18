@@ -3,22 +3,23 @@
 //  DependenceTests
 //
 
-@testable import Dependence
 import DependenceTesting
 import Foundation
 import Testing
 
-/// Regression suite for ``IssueContext`` detection order. The test process
-/// has `Testing.framework` (and likely `XCTest`) loaded — the only signal
-/// that should reliably promote a process to `.preview` is the
-/// `XCODE_RUNNING_FOR_PREVIEWS` env var, which Xcode's preview shim sets.
-/// Detection MUST consult that env var ahead of test-framework probes,
-/// otherwise SwiftUI Previews resolve to `liveValue`/`testValue` instead of
-/// `previewValue` and `@DependencyEntry(preview:)` registrations are
-/// effectively ignored at preview time.
+@testable import Dependence
+
+/// Regression suite for ``IssueContext`` detection order.
+///
+/// The test process has `Testing.framework` (and likely `XCTest`) loaded —
+/// the only signal that should reliably promote a process to `.preview` is
+/// the `XCODE_RUNNING_FOR_PREVIEWS` env var, which Xcode's preview shim
+/// sets. Detection MUST consult that env var ahead of test-framework
+/// probes, otherwise SwiftUI Previews resolve to `liveValue`/`testValue`
+/// instead of `previewValue` and `@DependencyEntry(preview:)` registrations
+/// are effectively ignored at preview time.
 @Suite("IssueContext detection", .serialized)
 struct IssueContextDetectionTests {
-
     @Test("Preview env var wins against an active test framework")
     func previewEnvVarTakesPrecedence() {
         let context = IssueContext.resolve(
@@ -28,11 +29,57 @@ struct IssueContextDetectionTests {
         )
         #expect(context == .preview)
     }
+
+    @Test("Swift Testing wins over XCTest when both frameworks are loaded")
+    func swiftTestingBeatsXCTest() {
+        let context = IssueContext.resolve(
+            environment: [:],
+            isSwiftTestingLoaded: true,
+            isXCTestLoaded: true
+        )
+        #expect(context == .swiftTesting)
+    }
+
+    @Test("XCTest alone resolves to .xctest")
+    func xctestAlone() {
+        let context = IssueContext.resolve(
+            environment: [:],
+            isSwiftTestingLoaded: false,
+            isXCTestLoaded: true
+        )
+        #expect(context == .xctest)
+    }
+
+    @Test("No signals resolves to .runtime")
+    func allSignalsFalse() {
+        let context = IssueContext.resolve(
+            environment: [:],
+            isSwiftTestingLoaded: false,
+            isXCTestLoaded: false
+        )
+        #expect(context == .runtime)
+    }
+
+    @Test("Preview env var must be exactly \"1\" — \"0\" is not a preview")
+    func previewEnvVarZeroIsNotPreview() {
+        let zero = IssueContext.resolve(
+            environment: ["XCODE_RUNNING_FOR_PREVIEWS": "0"],
+            isSwiftTestingLoaded: false,
+            isXCTestLoaded: false
+        )
+        #expect(zero == .runtime)
+
+        let one = IssueContext.resolve(
+            environment: ["XCODE_RUNNING_FOR_PREVIEWS": "1"],
+            isSwiftTestingLoaded: false,
+            isXCTestLoaded: false
+        )
+        #expect(one == .preview)
+    }
 }
 
 @Suite("DependencyValues")
 struct DependencyValuesTests {
-
     // A dummy dependency used by these tests.
     struct Greeter: Sendable {
         var greet: @Sendable () -> String
