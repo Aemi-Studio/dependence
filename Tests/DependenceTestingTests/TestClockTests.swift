@@ -156,19 +156,27 @@ struct TestClockTests {
     @Test("run() drains sleepers scheduled at distinct deadlines")
     func runDrainsSleepers() async {
         let clock = TestClock()
-        let completions = Mutex(0)
-        await withTaskGroup(of: Void.self) { group in
+        // Each child returns 1 on completion and the group sums them, instead
+        // of mutating a shared `Mutex` captured into the fan-out closures.
+        // A `Mutex` captured into a *loop* of `addTask` closures while the
+        // enclosing task also touches shared state trips region-based
+        // `sending` analysis on release toolchains (`#SendingClosureRisksDataRace`) —
+        // the access is safe, but returning through the group sidesteps the
+        // false positive and matches the other TestClock fan-out tests here.
+        let completions = await withTaskGroup(of: Int.self) { group in
             for i in 1...3 {
                 group.addTask {
                     try? await clock.sleep(for: .seconds(Int64(i)))
-                    completions.withLock { $0 += 1 }
+                    return 1
                 }
             }
             try? await clock.waitForSleepers(count: 3)
             await clock.run()
-            for await _ in group {}
+            var total = 0
+            for await value in group { total += value }
+            return total
         }
-        #expect(completions.withLock { $0 } == 3)
+        #expect(completions == 3)
         #expect(clock.now.offset == .seconds(3))
     }
 
