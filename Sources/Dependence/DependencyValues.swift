@@ -72,11 +72,14 @@ public struct DependencyValues: Sendable {
     /// sibling subtrees correctly: the most-recently published entry wins.
     ///
     /// **Resolution precedence**: this stack sits *below* the `@TaskLocal`-
-    /// bound ``_current`` whenever `_current` carries explicit overrides. A
-    /// ``withDependencies(_:operation:)-(_,_)`` block layered inside a
-    /// `.dependencies { … }` SwiftUI subtree therefore wins entirely. The
-    /// stack only matters for non-View hosts (e.g. `@Observable` view
-    /// models) that have no `@Environment` pipeline of their own.
+    /// bound ``_current`` whenever `_current` carries explicit overrides.
+    /// A ``withDependencies(_:operation:)-(_,_)`` block nested inside a
+    /// `.dependencies { … }` SwiftUI subtree *layers over* it: the block
+    /// seeds its task-local copy from the resolved active container, so
+    /// the subtree's unrelated keys stay visible and the block's mutations
+    /// win for the keys it touches. The stack only matters for non-View
+    /// hosts (e.g. `@Observable` view models) that have no `@Environment`
+    /// pipeline of their own.
     @usableFromInline
     static let _subtreeStack: Mutex<[SubtreeEntry]> = Mutex([])
 
@@ -161,8 +164,11 @@ public struct DependencyValues: Sendable {
     /// 3. The empty `_current`, which falls through to each key's
     ///    `liveValue`/`previewValue`/`testValue` based on context.
     ///
-    /// `withDependencies` always wins. The subtree stack is a lower-priority
-    /// fallback for non-View hosts that have no `@Environment` pipeline.
+    /// `withDependencies` wins for the keys it mutates — and, because it
+    /// seeds from this same resolved container, it *layers over* an active
+    /// subtree instead of hiding the subtree's unrelated keys. The subtree
+    /// stack is a lower-priority fallback for non-View hosts that have no
+    /// `@Environment` pipeline.
     public static var current: DependencyValues {
         resolveActive(environmentSnapshot: nil)
     }

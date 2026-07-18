@@ -18,6 +18,12 @@ import Synchronization
 ///
 /// Calling this twice in the same process emits a runtime warning — the
 /// second call is ignored.
+///
+/// Do **not** call this from inside a ``withDependencies(_:operation:)-(_,_)``
+/// block: the prepared bag seeds from the task-local container, so any
+/// scoped override in flight would be frozen into the *process-wide* cache
+/// and outlive its scope. That situation is reported as an issue (the
+/// install still proceeds, matching the historical behavior).
 public func prepareDependencies(_ mutate: (inout DependencyValues) -> Void) {
     PrepareDependenciesState.shared.run(mutate: mutate)
 }
@@ -45,6 +51,18 @@ package final class PrepareDependenciesState: Sendable {
             return
         }
         var copy = DependencyValues._current
+        if !copy.overrides.isEmpty {
+            // A withDependencies scope is active around the composition
+            // root. Its task-local overrides are about to be frozen into
+            // the process-wide cache — they would outlive their scope.
+            // Loud, then proceed (the install has always included them).
+            reportIssue(
+                "prepareDependencies(_:) was called inside a withDependencies scope — the scope's "
+                    + "task-local overrides (\(copy.overrides.count) key(s)) are being installed into the "
+                    + "process-wide cache and will outlive the scope. Call prepareDependencies from the "
+                    + "composition root, outside any scoped override."
+            )
+        }
         mutate(&copy)
         // The TaskLocal can only be set within a `withValue` scope. For the
         // app-lifetime case we take a different path: write each override

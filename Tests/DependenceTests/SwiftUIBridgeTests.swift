@@ -33,6 +33,11 @@
             static var testValue: Greeter { Greeter(name: "test") }
         }
 
+        private enum SecondKey: DependencyKey {
+            static var liveValue: Greeter { Greeter(name: "live-second") }
+            static var testValue: Greeter { Greeter(name: "test-second") }
+        }
+
         /// Simulates what `View.dependencies(_:)` writes onto the subtree stack.
         ///
         /// We don't render SwiftUI here — that requires a host runloop — but
@@ -142,6 +147,27 @@
                 @Dependency(test: GreeterKey.self) var greeter
                 #expect(greeter == Greeter(name: "task-local"))
             }
+        }
+
+        @Test("withDependencies layers over an active subtree, preserving unrelated keys (F6)")
+        func withDependenciesLayersOverSubtree() {
+            defer { clearSubtreeOverride() }
+            publishSubtreeOverride {
+                $0[GreeterKey.self] = Greeter(name: "subtree")
+                $0[SecondKey.self] = Greeter(name: "subtree-second")
+            }
+            withDependencies {
+                // Touch only SecondKey; GreeterKey must keep the subtree's
+                // value inside the block. (Pre-F6, the block seeded from the
+                // raw task-local and GreeterKey silently fell back to the
+                // context default "test".)
+                $0[SecondKey.self] = Greeter(name: "scoped-second")
+            } operation: {
+                #expect(DependencyValues.current[GreeterKey.self] == Greeter(name: "subtree"))
+                #expect(DependencyValues.current[SecondKey.self] == Greeter(name: "scoped-second"))
+            }
+            // Outside the block the subtree fallback is intact.
+            #expect(DependencyValues.current[SecondKey.self] == Greeter(name: "subtree-second"))
         }
 
         @Test("withDependencies overrides win against an active subtree")

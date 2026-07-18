@@ -105,6 +105,25 @@ extension ProcessGlobalStateSuites {
             #expect(DependencyValues.current[SwitchableKey.self] == Switchable(value: "base"))
         }
 
+        @Test("prepareDependencies inside a withDependencies scope reports the leaking overrides (F6)")
+        func prepareInsideWithDependenciesReports() {
+            resetRuntime()
+            defer { resetRuntime() }
+
+            withDependencies {
+                $0[SwitchableKey.self] = Switchable(value: "ambient")
+            } operation: {
+                withKnownIssue("task-local overrides freezing into the process cache must be loud") {
+                    prepareDependencies {
+                        $0[SwitchableKey.self] = Switchable(value: "prepared")
+                    }
+                }
+            }
+            // Behavior is unchanged by the report: the install proceeded and
+            // the mutation (applied on top of the ambient copy) won.
+            #expect(DependencyValues()[SwitchableKey.self] == Switchable(value: "prepared"))
+        }
+
         @Test("Scene-style installIfNeeded is a silent first-call-wins no-op afterwards")
         func sceneStyleInstallIfNeededIsSilent() {
             resetRuntime()
