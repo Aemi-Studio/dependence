@@ -8,15 +8,20 @@
 //  itself a contract — the matrix in `Lifetime.md` depends on it.
 //
 
-@testable import Dependence
 @_spi(TestSupport) import Dependence
 import DependenceTesting
 import Foundation
 import Testing
 
-@Suite("Process-wide cache and prepare-state", .serialized)
-struct ProcessCacheTests {
+@testable import Dependence
 
+// The no-op `.dependencies` trait is load-bearing: constructing it installs
+// `DependenceTesting`'s Swift Testing issue-routing handler. Under the
+// SwiftBuild backend each test target runs as its own bundle, so this bundle
+// cannot rely on another target having installed the handler — without it,
+// `withKnownIssue` blocks below would never see the `reportIssue` calls.
+@Suite("Process-wide cache and prepare-state", .serialized, .dependencies { _ in })
+struct ProcessCacheTests {
     private struct Switchable: Sendable, Equatable { var value: String }
 
     private enum SwitchableKey: DependencyKey {

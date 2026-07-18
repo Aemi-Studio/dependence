@@ -57,7 +57,7 @@ let package = Package(
     ],
     dependencies: [
         // Only swiftlang dependency. Required by the macros plugin.
-        .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "602.0.0"),
+        .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "602.0.0")
     ],
     targets: [
         // MARK: - Core
@@ -279,11 +279,18 @@ let package = Package(
 
         // MARK: - Tests
 
+        // NOTE: deliberately does NOT depend on `DependenceMacros`. The test
+        // sources never import it, and an `.xctest` bundle that (even
+        // transitively) depends on the macro target trips a SwiftBuild-backend
+        // toolchain bug: the compiler plugin's objects are linked into the
+        // bundle without their SwiftSyntax libraries. Macro behavior is
+        // covered by `DependenceMacrosTests` (plugin-level, links the
+        // SwiftSyntax test-support products explicitly) and by the
+        // compile-only `DependenceMacrosMainActorFixtures` target.
         .testTarget(
             name: "DependenceTests",
             dependencies: [
                 "Dependence",
-                "DependenceMacros",
                 "DependenceTesting",
             ],
             path: "Tests/DependenceTests",
@@ -298,21 +305,29 @@ let package = Package(
             path: "Tests/DependenceMacrosTests",
             swiftSettings: .strict
         ),
-        // Compile-only regression target that pins the @DependencyClient
-        // ↔ `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` interaction. This
+        // Compile-only regression target that pins the macro ↔
+        // `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` interaction. This
         // target sets `defaultIsolation(MainActor.self)` so every
         // declaration in it is implicitly `@MainActor` — the same shape as
         // an Xcode 26 app module built with the default-isolation knob
-        // flipped. If `@DependencyClient` stops marking its synthesized
-        // members `nonisolated`, the fixtures in this target stop
-        // compiling.
-        .testTarget(
-            name: "DependenceMacrosMainActorTests",
+        // flipped. If `@DependencyClient` or `@DependencyEntry` stop
+        // emitting `nonisolated` where required, the fixtures in this
+        // target stop compiling.
+        //
+        // Deliberately a plain `.target`, not a `.testTarget`: under the
+        // default (SwiftBuild) backend, an `.xctest` bundle that
+        // transitively depends on the macro plugin fails to link — the
+        // plugin's object files are pulled into the test bundle without
+        // the SwiftSyntax libraries they reference (toolchain bug). The
+        // fixtures had no meaningful runtime assertions anyway; the build
+        // *is* the test, and `swift build` (run in CI) covers it.
+        .target(
+            name: "DependenceMacrosMainActorFixtures",
             dependencies: [
                 "Dependence",
                 "DependenceMacros",
             ],
-            path: "Tests/DependenceMacrosMainActorTests",
+            path: "Tests/DependenceMacrosMainActorFixtures",
             swiftSettings: .strict + [.defaultIsolation(MainActor.self)]
         ),
         .testTarget(
@@ -354,13 +369,25 @@ let package = Package(
             path: "Tests/DependenceAppIntentsTests",
             swiftSettings: .strict
         ),
+        // No direct `DependenceMacros` dependency (unused by the test
+        // sources) — but `ExampleStressAppCore` depends on it, and the
+        // SwiftBuild backend links the macro *plugin*'s objects into the
+        // `.xctest` bundle for that transitive edge (toolchain bug; the
+        // native backend does not). The SwiftSyntax products below exist
+        // solely to satisfy those spurious plugin symbols at link time.
+        // Remove them once the backend stops linking compiler-plugin
+        // objects into test bundles.
         .testTarget(
             name: "ExampleStressAppCoreTests",
             dependencies: [
                 "Dependence",
-                "DependenceMacros",
                 "DependenceTesting",
                 "ExampleStressAppCore",
+                .product(name: "SwiftSyntax", package: "swift-syntax"),
+                .product(name: "SwiftSyntaxBuilder", package: "swift-syntax"),
+                .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
+                .product(name: "SwiftDiagnostics", package: "swift-syntax"),
+                .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
             ],
             path: "Tests/ExampleStressAppCoreTests",
             swiftSettings: .strict
