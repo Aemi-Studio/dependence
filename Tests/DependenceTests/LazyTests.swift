@@ -18,7 +18,6 @@ import Testing
 
 @Suite("Lazy semantics")
 struct LazyTests {
-
     @Test("First read computes; subsequent reads return the cached value")
     func computesOnceAndCaches() {
         let calls = Mutex<Int>(0)

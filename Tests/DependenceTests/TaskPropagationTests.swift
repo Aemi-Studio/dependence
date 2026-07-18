@@ -17,7 +17,6 @@ import Testing
 
 @Suite("Task and task-group propagation")
 struct TaskPropagationTests {
-
     private struct Token: Sendable, Equatable { var name: String }
 
     private enum TokenKey: DependencyKey {

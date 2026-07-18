@@ -10,26 +10,28 @@
 //
 
 #if canImport(UIKit)
-import Dependence
-import Observation
-import UIKit
+    import Dependence
+    import Observation
+    import UIKit
 
-extension UIViewController {
-    /// Read the active dependencies and observe any `@Observable` access
-    /// performed by `body`. When any observed value changes, `onChange` is
-    /// invoked once on the main actor, after which you typically reschedule
-    /// by calling this helper again.
-    @MainActor
-    public func withObservedDependencies<R>(
-        _ body: (DependencyValues) -> R,
-        onChange: @escaping @MainActor () -> Void
-    ) -> R {
-        let values = traitCollection.dependencies
-        return withObservationTracking {
-            body(values)
-        } onChange: {
-            Task { @MainActor in onChange() }
+    extension UIViewController {
+        /// Read the active dependencies, observing what `body` accesses.
+        ///
+        /// Any `@Observable` access performed by `body` is tracked. When an
+        /// observed value changes, `onChange` is invoked once on the main
+        /// actor, after which you typically reschedule by calling this
+        /// helper again.
+        @MainActor
+        public func withObservedDependencies<R>(
+            _ body: (DependencyValues) -> R,
+            onChange: @escaping @MainActor () -> Void
+        ) -> R {
+            let values = traitCollection.dependencies
+            return withObservationTracking {
+                body(values)
+            } onChange: {
+                Task { @MainActor in onChange() }
+            }
         }
     }
-}
 #endif

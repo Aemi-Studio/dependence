@@ -5,7 +5,9 @@
 
 import Foundation
 
-/// A deferred constructor for `Value`. Produces a fresh value on each call.
+/// A deferred constructor for `Value`.
+///
+/// Produces a fresh value on each call.
 ///
 /// Use `Provider` to break dependency cycles or to express "give me a new
 /// instance each time" semantics inside a witness:

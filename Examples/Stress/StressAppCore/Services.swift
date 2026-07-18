@@ -32,7 +32,7 @@ extension AuthService {
             @Dependency(\.analyticsHTTPClient) var analytics
             @Dependency(\.authHTTPClient) var authHTTP
             @Dependency(\.sessionService) var session
-            
+
             try await analytics.track("auth.signIn.attempt", ["user": user])
             let token = try await authHTTP.signIn(user, pass)
             await session.beginSession(token)
@@ -251,7 +251,8 @@ public struct LoggerService: Sendable {
 }
 
 extension LoggerService {
-    public static let live = LoggerService(log: { _ in /* swallow in benchmarks */ })
+    // The live logger swallows everything — benchmarks must not pay for IO.
+    public static let live = LoggerService(log: { _ in })
     public static let preview = LoggerService(log: { _ in })
 }
 

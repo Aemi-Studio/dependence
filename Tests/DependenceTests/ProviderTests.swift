@@ -17,7 +17,6 @@ import Testing
 
 @Suite("Provider semantics")
 struct ProviderTests {
-
     @Test("Each call invokes the factory")
     func freshPerCall() {
         let calls = Mutex<Int>(0)

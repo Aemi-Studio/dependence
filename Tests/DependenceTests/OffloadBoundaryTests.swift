@@ -25,7 +25,6 @@ import Testing
 
 @Suite("Offload boundaries", .serialized)
 struct OffloadBoundaryTests {
-
     private struct Beacon: Sendable, Equatable { var value: String }
 
     private enum BeaconKey: DependencyKey {

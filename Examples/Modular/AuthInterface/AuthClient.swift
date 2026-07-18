@@ -36,7 +36,9 @@ public enum AuthClientKey: TestDependencyKey {
 }
 
 extension DependencyValues {
-    /// Read with `@Dependency(\.authClient)`. The no-initializer form of
+    /// Read with `@Dependency(\.authClient)`.
+    ///
+    /// The no-initializer form of
     /// `@DependencyEntry` routes through `AuthClientKey: TestDependencyKey`,
     /// so consumers don't need to import the live module.
     @DependencyEntry public var authClient: AuthClient

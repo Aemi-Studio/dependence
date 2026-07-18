@@ -8,37 +8,37 @@
 //
 
 #if canImport(UIKit)
-import Dependence
-import UIKit
+    import Dependence
+    import UIKit
 
-/// A `UITraitDefinition` that carries the active `DependencyValues` through
-/// the UIKit trait inheritance chain.
-///
-/// Reading: any `UITraitEnvironment` (views, view controllers, scenes,
-/// windows) can ask `traitCollection.dependencies` for the active container.
-/// Writing: container view controllers apply overrides via
-/// `viewController.traitOverrides.dependencies = ...`.
-public struct DependenceTrait: UITraitDefinition {
-    public static let defaultValue: DependencyValues = .init()
-    public static let affectsColorAppearance: Bool = false
-    public static let identifier: String = "com.dependence.UITrait.dependencies"
-    public static let name: String = "Dependence.dependencies"
-}
-
-extension UITraitCollection {
-    /// The active `DependencyValues` resolved through the trait chain.
+    /// A `UITraitDefinition` that carries the active `DependencyValues` through
+    /// the UIKit trait inheritance chain.
     ///
-    /// Falls back to an empty container if no ancestor has applied an override.
-    public var dependencies: DependencyValues {
-        self[DependenceTrait.self]
+    /// Reading: any `UITraitEnvironment` (views, view controllers, scenes,
+    /// windows) can ask `traitCollection.dependencies` for the active container.
+    /// Writing: container view controllers apply overrides via
+    /// `viewController.traitOverrides.dependencies = ...`.
+    public struct DependenceTrait: UITraitDefinition {
+        public static let defaultValue: DependencyValues = .init()
+        public static let affectsColorAppearance: Bool = false
+        public static let identifier: String = "com.dependence.UITrait.dependencies"
+        public static let name: String = "Dependence.dependencies"
     }
-}
 
-extension UIMutableTraits {
-    /// Apply or read the trait-scoped `DependencyValues`.
-    public var dependencies: DependencyValues {
-        get { self[DependenceTrait.self] }
-        set { self[DependenceTrait.self] = newValue }
+    extension UITraitCollection {
+        /// The active `DependencyValues` resolved through the trait chain.
+        ///
+        /// Falls back to an empty container if no ancestor has applied an override.
+        public var dependencies: DependencyValues {
+            self[DependenceTrait.self]
+        }
     }
-}
+
+    extension UIMutableTraits {
+        /// Apply or read the trait-scoped `DependencyValues`.
+        public var dependencies: DependencyValues {
+            get { self[DependenceTrait.self] }
+            set { self[DependenceTrait.self] = newValue }
+        }
+    }
 #endif

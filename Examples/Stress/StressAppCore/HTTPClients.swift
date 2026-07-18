@@ -49,7 +49,10 @@ extension AuthHTTPClient {
 public struct FeedItem: Sendable, Equatable {
     public let id: Int
     public let title: String
-    public init(id: Int, title: String) { self.id = id; self.title = title }
+    public init(id: Int, title: String) {
+        self.id = id
+        self.title = title
+    }
 }
 
 @DependencyClient
@@ -77,7 +80,10 @@ extension FeedHTTPClient {
 public struct UserProfile: Sendable, Equatable {
     public let id: String
     public let displayName: String
-    public init(id: String, displayName: String) { self.id = id; self.displayName = displayName }
+    public init(id: String, displayName: String) {
+        self.id = id
+        self.displayName = displayName
+    }
 }
 
 @DependencyClient

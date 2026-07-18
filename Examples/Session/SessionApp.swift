@@ -37,10 +37,12 @@ public enum CurrentUserKey: TestDependencyKey {
 }
 
 extension DependencyValues {
-    /// Manual accessor — `@DependencyEntry`'s no-init form derives the key
-    /// name from the value type (`<TypeName>Key`), which doesn't apply
-    /// cleanly to an `Optional<AuthenticatedUser>`. The hand-written form
-    /// remains a first-class option whenever the convention doesn't fit.
+    /// Manual accessor for the interface-only session key.
+    ///
+    /// The no-init form of `@DependencyEntry` derives the key name from the
+    /// value type, which doesn't apply cleanly to an `Optional`. The
+    /// hand-written form remains a first-class option whenever the
+    /// convention doesn't fit.
     public var currentUser: AuthenticatedUser? {
         get { self[test: CurrentUserKey.self] }
         set { self[test: CurrentUserKey.self] = newValue }

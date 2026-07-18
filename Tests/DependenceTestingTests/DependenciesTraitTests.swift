@@ -7,11 +7,12 @@ import Dependence
 import DependenceTesting
 import Testing
 
-@Suite("DependenciesTrait", .dependencies { values in
-    values[TraitKey.self] = "from-suite"
-})
+@Suite(
+    "DependenciesTrait",
+    .dependencies { values in
+        values[TraitKey.self] = "from-suite"
+    })
 struct DependenciesTraitTests {
-
     @Test("Suite-level trait is applied")
     func suiteLevel() {
         #expect(DependencyValues.current[TraitKey.self] == "from-suite")

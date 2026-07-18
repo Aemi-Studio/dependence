@@ -9,32 +9,32 @@
 //
 
 #if canImport(SwiftUI)
-import Dependence
-import SwiftUI
+    import Dependence
+    import SwiftUI
 
-public struct GreetingView: View {
-    @State private var model = GreetingViewModel()
+    public struct GreetingView: View {
+        @State private var model = GreetingViewModel()
 
-    public init() {}
+        public init() {}
 
-    public var body: some View {
-        VStack(spacing: 12) {
-            Text(model.greeting)
-                .font(.title)
-            if let error = model.error {
-                Text(error).foregroundStyle(.red)
+        public var body: some View {
+            VStack(spacing: 12) {
+                Text(model.greeting)
+                    .font(.title)
+                if let error = model.error {
+                    Text(error).foregroundStyle(.red)
+                }
+                Button("Reload") {
+                    Task { await model.load() }
+                }
             }
-            Button("Reload") {
-                Task { await model.load() }
-            }
+            .padding()
+            .task { await model.load() }
+            .frame(minWidth: 400, minHeight: 400)
         }
-        .padding()
-        .task { await model.load() }
-        .frame(minWidth: 400, minHeight: 400)
     }
-}
 
-#Preview("Live witness") {
-    GreetingView()
-}
+    #Preview("Live witness") {
+        GreetingView()
+    }
 #endif

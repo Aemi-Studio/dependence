@@ -20,7 +20,6 @@ import Testing
 
 @Suite("@DependencyClient expansion")
 struct DependencyClientMacroTests {
-
     // MARK: Helpers
 
     /// Expands `@DependencyClient` on `source` and returns the synthesized

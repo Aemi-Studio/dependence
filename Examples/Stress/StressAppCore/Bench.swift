@@ -19,17 +19,31 @@ public enum StressBench {
     }
 
     /// Warm cache, then resolve all 20 keys `iterations` times and time it.
+    ///
     /// Exercises the cached read path through `DependencyValues.subscript`.
     public static func resolveAllKeys(iterations: Int) -> Stats {
         let v = DependencyValues.current
         // Warm the lazy cache for every key.
-        _ = v.authHTTPClient; _ = v.feedHTTPClient; _ = v.profileHTTPClient
-        _ = v.mediaHTTPClient; _ = v.searchHTTPClient; _ = v.analyticsHTTPClient
-        _ = v.notificationHTTPClient; _ = v.syncHTTPClient
-        _ = v.authService; _ = v.feedService; _ = v.profileService
-        _ = v.mediaService; _ = v.searchService; _ = v.analyticsService
-        _ = v.notificationService; _ = v.syncService; _ = v.cacheService
-        _ = v.loggerService; _ = v.featureFlagService; _ = v.sessionService
+        _ = v.authHTTPClient
+        _ = v.feedHTTPClient
+        _ = v.profileHTTPClient
+        _ = v.mediaHTTPClient
+        _ = v.searchHTTPClient
+        _ = v.analyticsHTTPClient
+        _ = v.notificationHTTPClient
+        _ = v.syncHTTPClient
+        _ = v.authService
+        _ = v.feedService
+        _ = v.profileService
+        _ = v.mediaService
+        _ = v.searchService
+        _ = v.analyticsService
+        _ = v.notificationService
+        _ = v.syncService
+        _ = v.cacheService
+        _ = v.loggerService
+        _ = v.featureFlagService
+        _ = v.sessionService
 
         let start = DispatchTime.now()
         var sink: Int = 0
@@ -112,6 +126,7 @@ public enum StressBench {
     public static func print(_ stats: Stats) {
         let nsPerOp = String(format: "%.1f", stats.nanosPerOp)
         let mOps = String(format: "%.2f", stats.opsPerSecond / 1_000_000)
-        Swift.print("[\(stats.label)] ops=\(stats.iterations) total=\(stats.totalNanos)ns ns/op=\(nsPerOp) Mops/s=\(mOps)")
+        Swift.print(
+            "[\(stats.label)] ops=\(stats.iterations) total=\(stats.totalNanos)ns ns/op=\(nsPerOp) Mops/s=\(mOps)")
     }
 }

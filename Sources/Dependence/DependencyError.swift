@@ -32,12 +32,12 @@ public enum DependencyError: Error, Sendable {
 extension DependencyError: LocalizedError {
     public var errorDescription: String? {
         switch self {
-        case .missingLiveValue(let label):
-            return "Dependence: no live value registered for \(label)."
-        case .cycle(let path):
-            return "Dependence: dependency cycle detected — \(path.joined(separator: " → "))."
-        case .unimplemented(let label):
-            return "Dependence: \(label) is unimplemented."
+            case .missingLiveValue(let label):
+                return "Dependence: no live value registered for \(label)."
+            case .cycle(let path):
+                return "Dependence: dependency cycle detected — \(path.joined(separator: " → "))."
+            case .unimplemented(let label):
+                return "Dependence: \(label) is unimplemented."
         }
     }
 }

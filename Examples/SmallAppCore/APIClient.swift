@@ -19,7 +19,9 @@ public struct APIClient: Sendable {
 }
 
 extension APIClient {
-    /// The production implementation. Pretends to talk to a server.
+    /// The production implementation.
+    ///
+    /// Pretends to talk to a server.
     public static let live = APIClient(
         fetchGreeting: {
             try await Task.sleep(for: .milliseconds(50))
@@ -35,6 +37,7 @@ extension APIClient {
 
 extension DependencyValues {
     /// The shared `APIClient` registered via the `@DependencyEntry` macro.
+    ///
     /// Read with `@Dependency(\.apiClient)`; override with
     /// `withDependencies { $0.apiClient = .preview } operation: { … }`.
     @DependencyEntry(preview: APIClient.preview) public var apiClient = APIClient.live
