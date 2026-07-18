@@ -25,7 +25,7 @@ extension DependenciesMacro: MemberMacro {
         in context: some MacroExpansionContext
     ) throws -> [DeclSyntax] {
         guard
-            case let .argumentList(arguments) = node.arguments,
+            case .argumentList(let arguments) = node.arguments,
             !arguments.isEmpty
         else {
             context.diagnose(Diagnostic(node: node, message: DependenceDiagnostic.dependenciesRequiresKeyPathArgument))
@@ -36,11 +36,15 @@ extension DependenciesMacro: MemberMacro {
         var seen: Set<String> = []
         for argument in arguments {
             guard let keyPath = argument.expression.as(KeyPathExprSyntax.self) else {
-                context.diagnose(Diagnostic(node: argument.expression, message: DependenceDiagnostic.dependenciesRequiresKeyPathArgument))
+                context.diagnose(
+                    Diagnostic(
+                        node: argument.expression, message: DependenceDiagnostic.dependenciesRequiresKeyPathArgument))
                 continue
             }
             guard let name = trailingPropertyName(of: keyPath) else {
-                context.diagnose(Diagnostic(node: keyPath, message: DependenceDiagnostic.dependenciesKeyPathMissingPropertyComponent))
+                context.diagnose(
+                    Diagnostic(node: keyPath, message: DependenceDiagnostic.dependenciesKeyPathMissingPropertyComponent)
+                )
                 continue
             }
             // Skip duplicates silently — re-stamping the same property would
@@ -48,9 +52,13 @@ extension DependenciesMacro: MemberMacro {
             // graceful skip keeps the diagnostic story focused on real bugs.
             guard seen.insert(name).inserted else { continue }
 
+            // `@Observation.ObservationIgnored` is module-qualified so a
+            // user-defined `ObservationIgnored` in the expansion context (or a
+            // shadowing import) cannot hijack the attribute — same defensive
+            // spelling as `Dependence.Dependency` on the next line.
             decls.append(
                 """
-                @ObservationIgnored
+                @Observation.ObservationIgnored
                 @Dependence.Dependency(\\.\(raw: name)) private var \(raw: name)
                 """
             )
@@ -59,8 +67,9 @@ extension DependenciesMacro: MemberMacro {
     }
 }
 
-/// Extracts the single trailing property identifier from a key path literal:
-/// `\.apiClient` -> `"apiClient"`. Returns `nil` if the literal has no
+/// Extracts the single trailing property identifier from a key path literal.
+///
+/// `\.apiClient` becomes `"apiClient"`. Returns `nil` if the literal has no
 /// property component (e.g. `\.self`) or has multiple components
 /// (e.g. `\.network.client`) — both unsupported in this macro because the
 /// synthesized property name would be ambiguous.

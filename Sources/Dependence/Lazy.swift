@@ -8,9 +8,11 @@
 import Foundation
 import Synchronization
 
-/// A `Sendable`-safe one-shot lazy. Construct with a `@Sendable` closure;
-/// the first installed result is cached and every subsequent read returns
-/// that value without re-entering the closure.
+/// A `Sendable`-safe one-shot lazy.
+///
+/// Construct with a `@Sendable` closure; the first installed result is
+/// cached and every subsequent read returns that value without re-entering
+/// the closure.
 ///
 /// Useful for breaking initialization cycles inside witnesses or for
 /// expressing "expensive singleton, defer construction".
@@ -42,20 +44,15 @@ public struct Lazy<Value: Sendable>: Sendable {
         }
 
         func read() -> Value {
-            // Phase 1: locked peek. Cheap on the hot path.
-            let initial: State = lock.withLock { $0 }
-            if case .evaluated(let value) = initial {
-                return value
-            }
-            guard case .unevaluated(let make) = initial else {
-                // Should be exhaustive but the compiler can't prove it across
-                // the locked scope — fall back to a re-read.
-                return lock.withLock { state in
-                    if case .evaluated(let value) = state {
-                        return value
-                    }
-                    fatalError("Lazy.Storage state torn between peeks")
-                }
+            // Phase 1: locked peek. Cheap on the hot path. The switch is
+            // exhaustive — the previous guard-with-fallback re-read was dead
+            // code dressed up as caution.
+            let make: @Sendable () -> Value
+            switch lock.withLock({ $0 }) {
+                case .evaluated(let value):
+                    return value
+                case .unevaluated(let producer):
+                    make = producer
             }
             // Phase 2: compute outside the lock so a `make` closure that
             // re-enters another `Lazy` (or a `@Dependency` resolution) does

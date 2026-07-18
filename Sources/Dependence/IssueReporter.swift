@@ -103,7 +103,11 @@ public enum IssueReporter {
     /// Register a handler invoked by `reportIssue(_:)` before the built-in
     /// fallbacks.
     ///
-    /// Handlers are tried in registration order.
+    /// Handlers are tried in registration order. Registration **appends
+    /// without deduplication** — a handler registered twice runs twice, so
+    /// callers own idempotency. Route registration through a `static let`
+    /// once-token (see `DependenceTesting`'s `Bootstrap.once`) rather than
+    /// calling this from paths that can execute repeatedly.
     public static func register(_ handler: @escaping Handler) {
         _storage.withLock { state in
             state.handlers.append(handler)

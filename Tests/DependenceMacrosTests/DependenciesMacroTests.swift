@@ -11,10 +11,10 @@ import Testing
 @Suite("@Dependencies expansion")
 struct DependenciesMacroTests {
     let macros: [String: any Macro.Type] = [
-        "Dependencies": DependenciesMacro.self,
+        "Dependencies": DependenciesMacro.self
     ]
 
-    @Test("Stamps @ObservationIgnored @Dependency for each key path")
+    @Test("Stamps module-qualified @Observation.ObservationIgnored @Dependency for each key path")
     func multipleKeyPaths() {
         assertMacroExpansion(
             """
@@ -23,15 +23,15 @@ struct DependenciesMacroTests {
             }
             """,
             expandedSource: """
-            final class HomeViewModel {
+                final class HomeViewModel {
 
-                @ObservationIgnored
-                @Dependence.Dependency(\\.authClient) private var authClient
+                    @Observation.ObservationIgnored
+                    @Dependence.Dependency(\\.authClient) private var authClient
 
-                @ObservationIgnored
-                @Dependence.Dependency(\\.feedClient) private var feedClient
-            }
-            """,
+                    @Observation.ObservationIgnored
+                    @Dependence.Dependency(\\.feedClient) private var feedClient
+                }
+                """,
             macros: macros
         )
     }
@@ -45,15 +45,16 @@ struct DependenciesMacroTests {
             }
             """,
             expandedSource: """
-            final class Empty {
-            }
-            """,
+                final class Empty {
+                }
+                """,
             diagnostics: [
                 .init(
-                    message: "@Dependencies requires one or more key path literals, e.g. `@Dependencies(\\.apiClient)`.",
+                    message:
+                        "@Dependencies requires one or more key path literals, e.g. `@Dependencies(\\.apiClient)`.",
                     line: 1,
                     column: 1
-                ),
+                )
             ],
             macros: macros
         )
@@ -68,12 +69,12 @@ struct DependenciesMacroTests {
             }
             """,
             expandedSource: """
-            final class Model {
+                final class Model {
 
-                @ObservationIgnored
-                @Dependence.Dependency(\\.apiClient) private var apiClient
-            }
-            """,
+                    @Observation.ObservationIgnored
+                    @Dependence.Dependency(\\.apiClient) private var apiClient
+                }
+                """,
             macros: macros
         )
     }
