@@ -4,10 +4,13 @@
 //
 
 import Dependence
+import DependenceTesting
 import Synchronization
 import Testing
 
-@Suite("ScopeToken")
+// The no-op `.dependencies` trait installs Swift Testing issue routing for
+// this bundle (see ProcessCacheTests for the SwiftBuild-backend rationale).
+@Suite("ScopeToken", .dependencies { _ in })
 struct ScopeTokenTests {
     enum DemoScope: ScopeTag {}
 
@@ -22,6 +25,21 @@ struct ScopeTokenTests {
             borrowed.snapshot() * 2
         }
         #expect(result == 14)
+        #expect(counter.withLock { $0 } == 1)
+    }
+
+    @Test("Dropping a token without consuming it reports and runs teardown exactly once (F7)")
+    func dropWithoutConsumeFiresTeardownOnce() {
+        let counter = Mutex<Int>(0)
+        withKnownIssue("an unconsumed drop is a reported misuse") {
+            do {
+                _ = ScopeToken<DemoScope, Int>(
+                    value: 9,
+                    teardown: { counter.withLock { $0 += 1 } }
+                )
+                // The token dies at the end of this scope, unconsumed.
+            }
+        }
         #expect(counter.withLock { $0 } == 1)
     }
 
