@@ -15,7 +15,14 @@ let package = Package(
     ],
     products: [
         // Core: Foundation-only base + conditional SwiftUI bridge.
-        .library(name: "Dependence", targets: ["Dependence"]),
+        //
+        // `.dynamic` so that an app embedding several feature frameworks that
+        // all link Dependence shares ONE copy of the library — and therefore
+        // one process-wide resolution cache, subtree stack, and issue-handler
+        // registry. Static linking would duplicate that state per image and
+        // silently split the container. Only this product is dynamic; the
+        // satellites stay at SwiftPM's default (automatic) linkage.
+        .library(name: "Dependence", type: .dynamic, targets: ["Dependence"]),
 
         // Optional ergonomic macros. Importing this product pulls in SwiftSyntax.
         .library(name: "DependenceMacros", targets: ["DependenceMacros"]),
