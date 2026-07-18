@@ -44,7 +44,7 @@ public struct UnimplementedClock: Clock, Sendable {
     public init(_ label: String = "Clock") {
         // Ensure Swift Testing routing is installed before we ever emit an
         // `unimplemented` issue from this clock.
-        _ = _SwiftTestingIssueRouting.bootstrap
+        _ = Bootstrap.once
         self.label = label
         self.inner = ImmediateClock()
     }

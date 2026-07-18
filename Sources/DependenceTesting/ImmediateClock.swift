@@ -6,6 +6,7 @@
 //  exercise time-dependent code paths without actually waiting.
 //
 
+import Dependence
 import Foundation
 import Synchronization
 
@@ -56,6 +57,10 @@ public final class ImmediateClock: Clock, Sendable {
     }
 
     public init() {
+        // Every public entry point of DependenceTesting installs the Swift
+        // Testing issue-routing handler, so that linking + using the module
+        // in any form is enough to route `reportIssue` into `Issue.record`.
+        _ = Bootstrap.once
         self.offset = Mutex(.zero)
     }
 

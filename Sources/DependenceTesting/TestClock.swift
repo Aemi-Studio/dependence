@@ -142,7 +142,7 @@ public final class TestClock: Clock, Sendable {
     public init(now: Instant = Instant(offset: .zero)) {
         // Install Swift Testing issue routing before `run()`'s livelock
         // report (or any other `reportIssue`) can fire from this clock.
-        _ = _SwiftTestingIssueRouting.bootstrap
+        _ = Bootstrap.once
         var initial = State()
         initial.now = now
         self.state = Mutex(initial)

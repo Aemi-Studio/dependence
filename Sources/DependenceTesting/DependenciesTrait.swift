@@ -35,7 +35,7 @@ public struct DependenciesTrait: TestTrait, SuiteTrait, TestScoping {
     init(_ mutate: @escaping @Sendable (inout DependencyValues) -> Void) {
         // Force-touch the bootstrap so `reportIssue(_:)` calls made from
         // inside the wrapped test surface as Swift Testing failures.
-        _ = _SwiftTestingIssueRouting.bootstrap
+        _ = Bootstrap.once
         self.mutate = mutate
     }
 
