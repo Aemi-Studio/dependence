@@ -21,11 +21,16 @@
 
 import Foundation
 import Synchronization
-#if canImport(ObjectiveC)
-import ObjectiveC
+
+#if canImport(Darwin)
+    import Darwin
+#elseif canImport(Glibc)
+    import Glibc
+#elseif canImport(Musl)
+    import Musl
 #endif
 #if canImport(MachO)
-import MachO
+    import MachO
 #endif
 
 /// Reports an "issue" — a non-fatal failure that should surface as a test
@@ -59,21 +64,23 @@ public func reportIssue(
     }
 
     switch IssueContext.current {
-    case .swiftTesting:
-        // Swift Testing is loaded but no handler claimed the issue — most
-        // likely because `DependenceTesting` wasn't linked. Fall back to a
-        // runtime warning so the message is still visible.
-        RuntimeWarning.emit(text, file: filePath, line: line)
-    case .xctest:
-        IssueContext.routeToXCTest(message: text, file: filePath, line: line)
-    case .preview, .runtime:
-        RuntimeWarning.emit(text, file: filePath, line: line)
+        case .swiftTesting:
+            // Swift Testing is loaded but no handler claimed the issue — most
+            // likely because `DependenceTesting` wasn't linked. Fall back to a
+            // runtime warning so the message is still visible.
+            RuntimeWarning.emit(text, file: filePath, line: line)
+        case .xctest:
+            IssueContext.routeToXCTest(message: text, file: filePath, line: line)
+        case .preview, .runtime:
+            RuntimeWarning.emit(text, file: filePath, line: line)
     }
 }
 
 // MARK: - Public registration API
 
-/// Namespace for extending `reportIssue(_:)`'s routing behaviour.
+/// Namespace for extending the routing behaviour of `reportIssue(_:)`.
+///
+/// ## Linking constraints
 ///
 /// `Dependence` is a Foundation-only library and must not link
 /// `Testing.framework`. Code that *can* link it (notably `DependenceTesting`)
@@ -84,16 +91,19 @@ public enum IssueReporter {
     ///
     /// Returning `false` lets `reportIssue` fall through to the next handler
     /// or to the built-in fallbacks (XCTest routing, runtime warning).
-    public typealias Handler = @Sendable (
-        _ message: String,
-        _ fileID: String,
-        _ filePath: String,
-        _ line: Int,
-        _ column: Int
-    ) -> Bool
+    public typealias Handler =
+        @Sendable (
+            _ message: String,
+            _ fileID: String,
+            _ filePath: String,
+            _ line: Int,
+            _ column: Int
+        ) -> Bool
 
     /// Register a handler invoked by `reportIssue(_:)` before the built-in
-    /// fallbacks. Handlers are tried in registration order.
+    /// fallbacks.
+    ///
+    /// Handlers are tried in registration order.
     public static func register(_ handler: @escaping Handler) {
         _storage.withLock { state in
             state.handlers.append(handler)
@@ -104,8 +114,10 @@ public enum IssueReporter {
         }
     }
 
-    /// Snapshot of currently-registered handlers. Exposed `@usableFromInline`
-    /// so the inlined `reportIssue` body can iterate them.
+    /// Snapshot of currently-registered handlers.
+    ///
+    /// Exposed `@usableFromInline` so the inlined `reportIssue` body can
+    /// iterate them.
     ///
     /// The returned array shares storage with the published snapshot — Swift
     /// arrays are value types with COW semantics, so a read on the hot path
@@ -120,8 +132,9 @@ public enum IssueReporter {
         @usableFromInline
         var handlers: [Handler] = []
 
-        /// Cached read-only snapshot republished on every `register`. Keeps
-        /// `reportIssue` reads cheap when handler registration is rare
+        /// Cached read-only snapshot republished on every `register`.
+        ///
+        /// Keeps `reportIssue` reads cheap when handler registration is rare
         /// (the typical pattern: one bootstrap call per process).
         @usableFromInline
         var snapshot: [Handler] = []
@@ -130,8 +143,9 @@ public enum IssueReporter {
         init() {}
     }
 
-    /// Process-wide handler state. Same locking pattern as
-    /// `DependencyValues.cache`.
+    /// Process-wide handler state.
+    ///
+    /// Same locking pattern as `DependencyValues.cache`.
     @usableFromInline
     static let _storage: Mutex<State> = Mutex(State())
 }
@@ -152,29 +166,47 @@ package enum IssueContext: Sendable, Hashable {
     /// 1. `XCODE_RUNNING_FOR_PREVIEWS == "1"` — SwiftUI preview sandbox.
     ///    Checked first because Xcode's preview shim *also* loads
     ///    `XCTest.framework` into the preview process for diagnostic
-    ///    plumbing. If we probed for `XCTestCase` first, every preview
-    ///    would be misclassified as `.xctest` and resolve to `testValue`
-    ///    (which usually falls through to `liveValue`), defeating
+    ///    plumbing. If we probed for XCTest first, every preview would be
+    ///    misclassified as `.xctest` and resolve to `testValue` (which
+    ///    usually falls through to `liveValue`), defeating
     ///    `@DependencyEntry(preview: …)` registrations entirely.
     /// 2. `Testing.framework` is loaded into the address space — Swift
     ///    Testing.
-    /// 3. `objc_lookUpClass("XCTestCase")` — XCTest is linked into the
-    ///    process. Tests in the same process as a preview shim are
+    /// 3. `XCTest.framework` (or its Swift-support dylib) is loaded — an
+    ///    XCTest run. Tests in the same process as a preview shim are
     ///    impossible in practice, so this only fires for genuine XCTest
     ///    runs.
     /// 4. otherwise, plain runtime.
+    ///
+    /// This sits on **every** resolution's path (including cache hits), so
+    /// it must be cheap: the preview flag is one `getenv` computed once per
+    /// process, and the two framework probes are relaxed atomic loads kept
+    /// up to date by a dyld add-image observer — no environment-dictionary
+    /// bridging, no ObjC runtime lookups.
     @usableFromInline
     package static var current: IssueContext {
-        #if canImport(ObjectiveC)
-        let isXCTestLoaded = objc_lookUpClass("XCTestCase") != nil
-        #else
-        let isXCTestLoaded = false
-        #endif
+        // Lazily installs the dyld observer on first use; `swift_once` makes
+        // every later touch a single atomic check.
+        _ = TestFrameworkPresence.installObserver
         return resolve(
-            environment: ProcessInfo.processInfo.environment,
-            isSwiftTestingLoaded: _isSwiftTestingLoaded,
-            isXCTestLoaded: isXCTestLoaded
+            isPreview: _isPreviewEnvironment,
+            isSwiftTestingLoaded: TestFrameworkPresence.swiftTesting.load(ordering: .relaxed),
+            isXCTestLoaded: TestFrameworkPresence.xctest.load(ordering: .relaxed)
         )
+    }
+
+    /// Single source of truth for the probe precedence. `current` and the
+    /// environment-dictionary form below both funnel through this.
+    @usableFromInline
+    package static func resolve(
+        isPreview: Bool,
+        isSwiftTestingLoaded: Bool,
+        isXCTestLoaded: Bool
+    ) -> IssueContext {
+        if isPreview { return .preview }
+        if isSwiftTestingLoaded { return .swiftTesting }
+        if isXCTestLoaded { return .xctest }
+        return .runtime
     }
 
     /// Pure resolver used by tests so they do not need to mutate process-wide
@@ -185,12 +217,11 @@ package enum IssueContext: Sendable, Hashable {
         isSwiftTestingLoaded: Bool,
         isXCTestLoaded: Bool
     ) -> IssueContext {
-        if environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1" {
-            return .preview
-        }
-        if isSwiftTestingLoaded { return .swiftTesting }
-        if isXCTestLoaded { return .xctest }
-        return .runtime
+        resolve(
+            isPreview: environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1",
+            isSwiftTestingLoaded: isSwiftTestingLoaded,
+            isXCTestLoaded: isXCTestLoaded
+        )
     }
 
     /// Route a message to XCTest's output when present.
@@ -207,31 +238,62 @@ package enum IssueContext: Sendable, Hashable {
     }
 }
 
-// MARK: - Swift Testing detection (dyld scan)
+// MARK: - Context-detection state (preview flag + dyld observer)
 
-/// `true` if `Testing.framework` is currently loaded into this process.
+/// `true` if this process is Xcode's SwiftUI preview shim.
 ///
-/// We scan the dyld image list rather than `import Testing` so the
-/// `Dependence` library does not link the framework at build time. The result
-/// is computed once per process (the test bundle either loads Testing at
-/// startup or never).
-@usableFromInline
-let _isSwiftTestingLoaded: Bool = {
-    #if canImport(MachO)
-    let count = _dyld_image_count()
-    for i in 0..<count {
-        guard let cName = _dyld_get_image_name(i) else { continue }
-        let name = String(cString: cName)
-        // Matches both
-        //   .../Testing.framework/Testing
-        //   .../Testing.framework/Versions/A/Testing
-        // and the simulator runtime's PackageFrameworks variant.
-        if name.contains("/Testing.framework/") {
-            return true
-        }
-    }
-    return false
-    #else
-    return false
-    #endif
+/// Computed once per process through C `getenv` — no
+/// `ProcessInfo.environment` bridging (which rebuilds the entire
+/// environment dictionary on every access). Xcode sets the variable before
+/// the preview process launches, so a one-shot read is exact.
+let _isPreviewEnvironment: Bool = {
+    guard let raw = getenv("XCODE_RUNNING_FOR_PREVIEWS") else { return false }
+    return String(cString: raw) == "1"
 }()
+
+/// Tracks whether `Testing.framework` / `XCTest.framework` are loaded into
+/// this process, without linking either.
+///
+/// The flags start from the image list observed when the observer installs
+/// and are **upgraded** by a `_dyld_register_func_for_add_image` callback:
+/// dyld invokes the callback synchronously for every already-loaded image at
+/// registration, then again for each image loaded later. The upgrade path
+/// matters — a TEST_HOST app process loads the test bundle (and with it
+/// `Testing.framework`) *after* the app, and therefore possibly after the
+/// first dependency resolution; a compute-once latch would stick to `false`
+/// and misroute every issue for the rest of the run.
+///
+/// The flags are monotonic (`false` → `true`), so relaxed ordering is
+/// sufficient on both sides.
+enum TestFrameworkPresence {
+    static let swiftTesting = Atomic<Bool>(false)
+    static let xctest = Atomic<Bool>(false)
+
+    /// Installs the add-image observer. `static let` gives once semantics;
+    /// dyld reports all currently-loaded images synchronously during
+    /// registration, so the flags are exact by the time this initializer
+    /// returns.
+    static let installObserver: Void = {
+        #if canImport(MachO)
+            _dyld_register_func_for_add_image { header, _ in
+                guard let header else { return }
+                var info = Dl_info()
+                guard dladdr(UnsafeRawPointer(header), &info) != 0, let path = info.dli_fname else {
+                    return
+                }
+                // Matches both
+                //   .../Testing.framework/Testing
+                //   .../Testing.framework/Versions/A/Testing
+                // and the simulator runtime's PackageFrameworks variant.
+                if strstr(path, "/Testing.framework/") != nil {
+                    TestFrameworkPresence.swiftTesting.store(true, ordering: .relaxed)
+                }
+                if strstr(path, "/XCTest.framework/") != nil
+                    || strstr(path, "libXCTestSwiftSupport") != nil
+                {
+                    TestFrameworkPresence.xctest.store(true, ordering: .relaxed)
+                }
+            }
+        #endif
+    }()
+}
