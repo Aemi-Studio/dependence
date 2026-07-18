@@ -28,7 +28,8 @@ extension DependencyEntryMacro: AccessorMacro {
             return []
         }
         guard variable.bindingSpecifier.tokenKind == .keyword(.var) else {
-            context.diagnose(Diagnostic(node: variable.bindingSpecifier, message: DependenceDiagnostic.dependencyEntryRequiresVar))
+            context.diagnose(
+                Diagnostic(node: variable.bindingSpecifier, message: DependenceDiagnostic.dependencyEntryRequiresVar))
             return []
         }
 
@@ -43,19 +44,10 @@ extension DependencyEntryMacro: AccessorMacro {
         //        externally-declared `FooKey: TestDependencyKey` via
         //        `self[test: FooKey.self]`. This is the interface-module
         //        pattern: the live value lives in a separate Impl module.
-        if binding.initializer != nil {
-            let keyName = "__Key_\(identifier.text)"
-            return [
-                """
-                get { self[\(raw: keyName).self] }
-                """,
-                """
-                set { self[\(raw: keyName).self] = newValue }
-                """,
-            ]
-        } else {
+        guard binding.initializer != nil else {
             guard let typeText = binding.typeAnnotation?.type.trimmedDescription else {
-                context.diagnose(Diagnostic(node: variable, message: DependenceDiagnostic.dependencyEntryRequiresInitializer))
+                context.diagnose(
+                    Diagnostic(node: variable, message: DependenceDiagnostic.dependencyEntryRequiresInitializer))
                 return []
             }
             // The interface-only form points at an externally-declared key
@@ -73,6 +65,15 @@ extension DependencyEntryMacro: AccessorMacro {
                 """,
             ]
         }
+        let keyName = "__Key_\(identifier.text)"
+        return [
+            """
+            get { self[\(raw: keyName).self] }
+            """,
+            """
+            set { self[\(raw: keyName).self] = newValue }
+            """,
+        ]
     }
 }
 
@@ -106,7 +107,8 @@ private func sanitizedKeyName(from typeText: String) -> String {
     var result = ""
     var lastWasUnderscore = false
     for scalar in String(working).unicodeScalars {
-        let isAllowed = (scalar >= "A" && scalar <= "Z")
+        let isAllowed =
+            (scalar >= "A" && scalar <= "Z")
             || (scalar >= "a" && scalar <= "z")
             || (scalar >= "0" && scalar <= "9")
             || scalar == "_"
@@ -156,6 +158,20 @@ extension DependencyEntryMacro: PeerMacro {
         let preview = labeledArgument(named: "preview", in: node)
         let test = labeledArgument(named: "test", in: node)
 
+        // The enum is emitted `nonisolated` so its witnesses stay nonisolated
+        // even in modules built with default isolation MainActor
+        // (`SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`). `DependencyKey`
+        // inherits `Sendable`, so the conformance cannot be actor-isolated
+        // anyway — spelling it out keeps the expansion self-explanatory and
+        // future-proof against inference-rule changes.
+        //
+        // What the macro CANNOT fix: the user's witness expression itself.
+        // In a MainActor-default module, `static let live = …` on the witness
+        // type is implicitly `@MainActor`, and referencing it from the
+        // nonisolated `liveValue` below is a compile error pointing into
+        // this expansion. The macro has no visibility into the witness's
+        // isolation, so the requirement is documented on `@DependencyEntry`:
+        // mark such witness statics `nonisolated`.
         let keyName = "__Key_\(identifier.text)"
         let decl: DeclSyntax
         if let explicitType = binding.typeAnnotation?.type.trimmedDescription {
@@ -170,7 +186,7 @@ extension DependencyEntryMacro: PeerMacro {
             }
             decl =
                 """
-                fileprivate enum \(raw: keyName): Dependence.DependencyKey {
+                fileprivate nonisolated enum \(raw: keyName): Dependence.DependencyKey {
                     typealias Value = \(raw: explicitType)
                     \(raw: lines.joined(separator: "\n    "))
                 }
@@ -192,7 +208,7 @@ extension DependencyEntryMacro: PeerMacro {
             }
             decl =
                 """
-                fileprivate enum \(raw: keyName): Dependence.DependencyKey {
+                fileprivate nonisolated enum \(raw: keyName): Dependence.DependencyKey {
                     \(raw: lines.joined(separator: "\n    "))
                 }
                 """
@@ -206,8 +222,9 @@ extension DependencyEntryMacro: PeerMacro {
         named label: String,
         in node: AttributeSyntax
     ) -> String? {
-        guard case let .argumentList(args) = node.arguments else { return nil }
-        return args
+        guard case .argumentList(let args) = node.arguments else { return nil }
+        return
+            args
             .first { $0.label?.text == label }?
             .expression
             .trimmedDescription

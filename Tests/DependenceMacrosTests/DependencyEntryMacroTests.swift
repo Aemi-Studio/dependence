@@ -11,7 +11,7 @@ import Testing
 @Suite("@DependencyEntry expansion")
 struct DependencyEntryMacroTests {
     let macros: [String: any Macro.Type] = [
-        "DependencyEntry": DependencyEntryMacro.self,
+        "DependencyEntry": DependencyEntryMacro.self
     ]
 
     @Test("Generates a key with explicit type and routes get/set through it")
@@ -23,20 +23,20 @@ struct DependencyEntryMacroTests {
             }
             """,
             expandedSource: """
-            extension DependencyValues {
-                public var apiClient: APIClient {
-                    get { self[__Key_apiClient.self] }
-                    set { self[__Key_apiClient.self] = newValue }
-                }
+                extension DependencyValues {
+                    public var apiClient: APIClient {
+                        get { self[__Key_apiClient.self] }
+                        set { self[__Key_apiClient.self] = newValue }
+                    }
 
-                fileprivate enum __Key_apiClient: Dependence.DependencyKey {
-                    typealias Value = APIClient
-                    static var liveValue: APIClient {
-                        .live
+                    fileprivate nonisolated enum __Key_apiClient: Dependence.DependencyKey {
+                        typealias Value = APIClient
+                        static var liveValue: APIClient {
+                            .live
+                        }
                     }
                 }
-            }
-            """,
+                """,
             macros: macros
         )
     }
@@ -50,23 +50,23 @@ struct DependencyEntryMacroTests {
             }
             """,
             expandedSource: """
-            extension DependencyValues {
-                public var apiClient: APIClient {
-                    get { self[__Key_apiClient.self] }
-                    set { self[__Key_apiClient.self] = newValue }
-                }
+                extension DependencyValues {
+                    public var apiClient: APIClient {
+                        get { self[__Key_apiClient.self] }
+                        set { self[__Key_apiClient.self] = newValue }
+                    }
 
-                fileprivate enum __Key_apiClient: Dependence.DependencyKey {
-                    typealias Value = APIClient
-                    static var liveValue: APIClient {
-                        .live
-                    }
-                    static var previewValue: APIClient {
-                        APIClient.preview
+                    fileprivate nonisolated enum __Key_apiClient: Dependence.DependencyKey {
+                        typealias Value = APIClient
+                        static var liveValue: APIClient {
+                            .live
+                        }
+                        static var previewValue: APIClient {
+                            APIClient.preview
+                        }
                     }
                 }
-            }
-            """,
+                """,
             macros: macros
         )
     }
@@ -80,23 +80,23 @@ struct DependencyEntryMacroTests {
             }
             """,
             expandedSource: """
-            extension DependencyValues {
-                public var apiClient: APIClient {
-                    get { self[__Key_apiClient.self] }
-                    set { self[__Key_apiClient.self] = newValue }
-                }
+                extension DependencyValues {
+                    public var apiClient: APIClient {
+                        get { self[__Key_apiClient.self] }
+                        set { self[__Key_apiClient.self] = newValue }
+                    }
 
-                fileprivate enum __Key_apiClient: Dependence.DependencyKey {
-                    typealias Value = APIClient
-                    static var liveValue: APIClient {
-                        .live
-                    }
-                    static var testValue: APIClient {
-                        APIClient.unimplemented
+                    fileprivate nonisolated enum __Key_apiClient: Dependence.DependencyKey {
+                        typealias Value = APIClient
+                        static var liveValue: APIClient {
+                            .live
+                        }
+                        static var testValue: APIClient {
+                            APIClient.unimplemented
+                        }
                     }
                 }
-            }
-            """,
+                """,
             macros: macros
         )
     }
@@ -111,26 +111,26 @@ struct DependencyEntryMacroTests {
             }
             """,
             expandedSource: """
-            extension DependencyValues {
-                public var apiClient: APIClient {
-                    get { self[__Key_apiClient.self] }
-                    set { self[__Key_apiClient.self] = newValue }
-                }
+                extension DependencyValues {
+                    public var apiClient: APIClient {
+                        get { self[__Key_apiClient.self] }
+                        set { self[__Key_apiClient.self] = newValue }
+                    }
 
-                fileprivate enum __Key_apiClient: Dependence.DependencyKey {
-                    typealias Value = APIClient
-                    static var liveValue: APIClient {
-                        .live
-                    }
-                    static var previewValue: APIClient {
-                        APIClient.preview
-                    }
-                    static var testValue: APIClient {
-                        APIClient.unimplemented
+                    fileprivate nonisolated enum __Key_apiClient: Dependence.DependencyKey {
+                        typealias Value = APIClient
+                        static var liveValue: APIClient {
+                            .live
+                        }
+                        static var previewValue: APIClient {
+                            APIClient.preview
+                        }
+                        static var testValue: APIClient {
+                            APIClient.unimplemented
+                        }
                     }
                 }
-            }
-            """,
+                """,
             macros: macros
         )
     }

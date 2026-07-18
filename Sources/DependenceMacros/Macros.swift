@@ -39,33 +39,67 @@
 /// `.preview` shorthand to inference errors. The expansion stamps the
 /// expression verbatim into the generated conformance — a typo is caught
 /// at compile time inside the expansion, not at the macro call site.
+///
+/// ## Modules built with default isolation `MainActor`
+///
+/// Under `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` (the Xcode 26 app
+/// default), two declarations need explicit `nonisolated`:
+///
+/// 1. **The witness statics** referenced by the default expression and by
+///    `preview:` / `test:` arguments. The generated key's `liveValue` /
+///    `previewValue` / `testValue` are nonisolated protocol witnesses
+///    (`DependencyKey` inherits `Sendable`, so the conformance cannot be
+///    actor-isolated), and they evaluate your expression verbatim. An
+///    implicitly `@MainActor` `static let live` therefore fails with
+///    "main actor-isolated static property 'live' can not be referenced
+///    from a nonisolated context" pointing into the macro expansion. The
+///    macro cannot see the witness's isolation to diagnose this earlier —
+///    write `nonisolated static let live = …` on the witness type.
+/// 2. **The entry property itself**, if it must be readable from
+///    nonisolated code: an implicitly `@MainActor` accessor makes
+///    `@Dependency(\.entry)` fail with "cannot form key path to main
+///    actor-isolated property" outside the MainActor. Spell it
+///    `@DependencyEntry nonisolated var entry: T = .live`.
+///
+/// Additionally, write the **explicit type annotation** in such modules
+/// (`var entry: T = .live`, not `var entry = T.live`): the inferred form
+/// relies on associated-type inference from the generated stored
+/// `liveValue`, which the compiler does not perform under default
+/// isolation `MainActor`.
+///
+/// The `DependenceMacrosMainActorFixtures` target pins these requirements
+/// as compile-time regressions.
 @attached(accessor)
 @attached(peer, names: prefixed(__Key_))
-public macro DependencyEntry() = #externalMacro(
-    module: "DependenceMacrosPlugin",
-    type: "DependencyEntryMacro"
-)
+public macro DependencyEntry() =
+    #externalMacro(
+        module: "DependenceMacrosPlugin",
+        type: "DependencyEntryMacro"
+    )
 
 @attached(accessor)
 @attached(peer, names: prefixed(__Key_))
-public macro DependencyEntry(preview: Any) = #externalMacro(
-    module: "DependenceMacrosPlugin",
-    type: "DependencyEntryMacro"
-)
+public macro DependencyEntry(preview: Any) =
+    #externalMacro(
+        module: "DependenceMacrosPlugin",
+        type: "DependencyEntryMacro"
+    )
 
 @attached(accessor)
 @attached(peer, names: prefixed(__Key_))
-public macro DependencyEntry(test: Any) = #externalMacro(
-    module: "DependenceMacrosPlugin",
-    type: "DependencyEntryMacro"
-)
+public macro DependencyEntry(test: Any) =
+    #externalMacro(
+        module: "DependenceMacrosPlugin",
+        type: "DependencyEntryMacro"
+    )
 
 @attached(accessor)
 @attached(peer, names: prefixed(__Key_))
-public macro DependencyEntry(preview: Any, test: Any) = #externalMacro(
-    module: "DependenceMacrosPlugin",
-    type: "DependencyEntryMacro"
-)
+public macro DependencyEntry(preview: Any, test: Any) =
+    #externalMacro(
+        module: "DependenceMacrosPlugin",
+        type: "DependencyEntryMacro"
+    )
 
 /// Generate a memberwise initializer that supplies an `unimplemented` default
 /// for every closure-typed property of a witness struct.
@@ -86,10 +120,11 @@ public macro DependencyEntry(preview: Any, test: Any) = #externalMacro(
 /// Pure properties (non-closure) are required parameters in the generated
 /// init — they always need a real value.
 @attached(member, names: named(init), named(unimplemented))
-public macro DependencyClient() = #externalMacro(
-    module: "DependenceMacrosPlugin",
-    type: "DependencyClientMacro"
-)
+public macro DependencyClient() =
+    #externalMacro(
+        module: "DependenceMacrosPlugin",
+        type: "DependencyClientMacro"
+    )
 
 /// Synthesize `@ObservationIgnored @Dependency(\.<name>) private var <name>`
 /// stored properties from a list of dependency key paths.
@@ -110,8 +145,8 @@ public macro DependencyClient() = #externalMacro(
 /// must not participate in `Observation` tracking — `@Dependency` is a
 /// resolution port, not view-model state.
 @attached(member, names: arbitrary)
-public macro Dependencies(_ keyPaths: PartialKeyPath<Dependence.DependencyValues>...) = #externalMacro(
-    module: "DependenceMacrosPlugin",
-    type: "DependenciesMacro"
-)
-
+public macro Dependencies(_ keyPaths: PartialKeyPath<Dependence.DependencyValues>...) =
+    #externalMacro(
+        module: "DependenceMacrosPlugin",
+        type: "DependenciesMacro"
+    )
