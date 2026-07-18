@@ -39,8 +39,8 @@ package final class PrepareDependenciesState: Sendable {
         }
         if alreadyRan {
             reportIssue(
-                "prepareDependencies(_:) was called more than once in this process. " +
-                "Subsequent calls are ignored — configure all live dependencies in a single composition root."
+                "prepareDependencies(_:) was called more than once in this process. "
+                    + "Subsequent calls are ignored — configure all live dependencies in a single composition root."
             )
             return
         }
@@ -68,9 +68,10 @@ package final class PrepareDependenciesState: Sendable {
         }
     }
 
-    /// Resets the first-call-wins latch so a subsequent ``run(mutate:)`` or
-    /// ``installIfNeeded(_:)`` re-arms the install path. **Test-only**; never
-    /// call from production code.
+    /// Resets the first-call-wins latch.
+    ///
+    /// A subsequent ``run(mutate:)`` or ``installIfNeeded(_:)`` re-arms the
+    /// install path. **Test-only**; never call from production code.
     @_spi(TestSupport)
     public func _resetForTesting() {
         didRun.withLock { $0 = false }
@@ -79,10 +80,11 @@ package final class PrepareDependenciesState: Sendable {
 
 // MARK: - Test-only runtime reset (@_spi(TestSupport))
 
-/// Aggregate test-cleanup utility that wipes every piece of process-wide
-/// state owned by `Dependence`. Use from suite teardown when a test mutates
-/// the resolution cache, the SwiftUI subtree stack, or the
-/// ``prepareDependencies(_:)`` first-call-wins latch.
+/// Aggregate test-cleanup utility for process-wide `Dependence` state.
+///
+/// Use from suite teardown when a test mutates the resolution cache, the
+/// SwiftUI subtree stack, or the ``prepareDependencies(_:)``
+/// first-call-wins latch.
 ///
 /// **Test-only.** Behind `@_spi(TestSupport)`: importers must opt in with
 /// `@_spi(TestSupport) import Dependence` to call this. Production targets
@@ -90,7 +92,9 @@ package final class PrepareDependenciesState: Sendable {
 /// first-install-wins / stable-cache contract.
 @_spi(TestSupport)
 public enum DependencyRuntimeState {
-    /// Wipe every piece of process-wide state:
+    /// Wipe every piece of process-wide state.
+    ///
+    /// Specifically:
     ///
     /// 1. ``DependencyValues/cache`` — resolved defaults per `IssueContext`.
     /// 2. ``DependencyValues/_subtreeStack`` — every published SwiftUI
@@ -99,7 +103,7 @@ public enum DependencyRuntimeState {
     @_spi(TestSupport)
     public static func resetForTesting() {
         DependencyValues._resetCacheForTesting()
-        DependencyValues._subtreeStack.withLock { $0.removeAll() }
+        DependencyValues._clearSubtreesForTesting()
         PrepareDependenciesState.shared._resetForTesting()
     }
 }
