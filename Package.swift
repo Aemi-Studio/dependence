@@ -20,15 +20,41 @@ let package = Package(
         // all link Dependence shares ONE copy of the library — and therefore
         // one process-wide resolution cache, subtree stack, and issue-handler
         // registry. Static linking would duplicate that state per image and
-        // silently split the container. Only this product is dynamic; the
-        // satellites stay at SwiftPM's default (automatic) linkage.
+        // silently split the container.
         .library(name: "Dependence", type: .dynamic, targets: ["Dependence"]),
 
         // Optional ergonomic macros. Importing this product pulls in SwiftSyntax.
         .library(name: "DependenceMacros", targets: ["DependenceMacros"]),
 
         // Swift Testing trait + TestClock/ImmediateClock/UnimplementedClock.
-        .library(name: "DependenceTesting", targets: ["DependenceTesting"]),
+        //
+        // `.dynamic` — the one satellite that MUST be, because it is the one
+        // an app links into its **unit-test bundle**. As an automatic
+        // (static) product, `DependenceTesting`'s archive re-embeds a second
+        // full copy of the `Dependence` target (its target depends on the
+        // core target). Linked into the test bundle, that static copy defines
+        // the core *inside the bundle image*, so the test module's
+        // `DependencyValues._current` / `withDependencies` references bind the
+        // bundle-local copy instead of the app's `Dependence.framework`. A
+        // `withDependencies { … }` override set from a test then never reaches
+        // the container the app resolves against — the split that forced
+        // consumers to route bindings through an app-image shim
+        // (`withHostDependencies`). Shipping it dynamic keeps the core OUT of
+        // the test-bundle image: the bundle imports `Dependence` two-level
+        // (from the app), so test and app code share one `_current`.
+        //
+        // Only this satellite is dynamic. Under the SwiftBuild build system a
+        // dynamic library product still *embeds* its whole target closure
+        // (each satellite framework carries its own copy of the core rather
+        // than linking `Dependence.framework`), so making the non-test
+        // adapters dynamic would not de-duplicate the core — it would only
+        // push a second core copy into the **shipping app** that links them
+        // (duplicate Objective-C classes at launch, and a link-but-not-embed
+        // hazard for a framework the app references without bundling). Because
+        // `DependenceTesting` is only ever loaded by a test bundle, its
+        // residual embedded copy stays confined to test runs. The UIKit /
+        // AppKit / AppIntents adapters therefore stay automatic.
+        .library(name: "DependenceTesting", type: .dynamic, targets: ["DependenceTesting"]),
 
         // UIKit adapter — UITraitDefinition + UIObservationTracking helpers.
         .library(name: "DependenceUIKit", targets: ["DependenceUIKit"]),
