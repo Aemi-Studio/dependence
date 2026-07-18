@@ -24,7 +24,7 @@ import Synchronization
 ///
 /// Conforms to `Clock` against `Duration`, matching `ContinuousClock` /
 /// `SuspendingClock` so it can stand in for either at the dependency layer.
-public final class ImmediateClock: Clock, @unchecked Sendable {
+public final class ImmediateClock: Clock, Sendable {
     public typealias Duration = Swift.Duration
 
     public struct Instant: InstantProtocol, Sendable {
@@ -44,14 +44,6 @@ public final class ImmediateClock: Clock, @unchecked Sendable {
 
         public static func < (lhs: Instant, rhs: Instant) -> Bool {
             lhs.offset < rhs.offset
-        }
-
-        public static func == (lhs: Instant, rhs: Instant) -> Bool {
-            lhs.offset == rhs.offset
-        }
-
-        public func hash(into hasher: inout Hasher) {
-            hasher.combine(offset)
         }
     }
 
