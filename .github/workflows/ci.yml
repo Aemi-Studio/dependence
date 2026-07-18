@@ -1,0 +1,113 @@
+# CI for the dependence package.
+#
+# Why two build backends: the default SwiftBuild backend has a toolchain bug
+# where compiler-plugin objects are linked into .xctest bundles that depend
+# (even transitively) on the macro target — the package carries targeted
+# workarounds (see Package.swift), and both backends must stay green so a
+# toolchain fix or regression on either side is caught immediately. Drop the
+# native lane once the SwiftBuild bug is fixed upstream and the workarounds
+# are removed.
+#
+# Runner: the package declares tools 6.3 and all-platforms v26, so it needs
+# an Xcode 26.x (or newer) toolchain — the macos-26 image ships it as the
+# default. If the image's default ever lags, pin with
+# `sudo xcode-select -s /Applications/Xcode_26.x.app`.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: swift-format (strict)
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint
+        run: |
+          xcrun swift format lint --strict --configuration .swift-format \
+            --recursive Sources Tests Examples Package.swift
+
+  test-default-backend:
+    name: build + test (SwiftBuild backend)
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: swift --version
+      - name: Cache SwiftPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: .build/checkouts
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+      # Full build first: it also covers every example executable and the
+      # compile-only DependenceMacrosMainActorFixtures regression target,
+      # which `swift test` alone would not build.
+      - name: Build (all targets, including examples and fixtures)
+        run: swift build
+      - name: Test
+        run: swift test
+
+  test-native-backend:
+    name: build + test (native backend)
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache SwiftPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: .build/checkouts
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+      - name: Build (all targets, including examples and fixtures)
+        run: swift build --build-system native
+      - name: Test
+        run: swift test --build-system native
+
+  examples:
+    name: example executables build
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache SwiftPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: .build/checkouts
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+      # Redundant with the full builds above by construction, but pinned by
+      # product name so a packaging change that silently drops an example
+      # from the build graph fails with a clear signal.
+      - name: Build example products
+        run: |
+          swift build --product ExampleSmallApp
+          swift build --product ExampleModularApp
+          swift build --product ExampleSessionApp
+          swift build --product ExampleStressApp
+
+  bench-smoke:
+    name: bench harness smoke
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache SwiftPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: .build/checkouts
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+      # Smoke only: asserts the harness runs and prints a stats line.
+      # Deliberately NOT a performance gate — shared runners have wildly
+      # variable throughput; the perf tripwire lives in StressBenchTests
+      # with a conservative ceiling instead.
+      - name: Build bench harness (release)
+        run: swift build -c release --product ExampleStressApp
+      - name: Run resolve bench (low iterations)
+        run: |
+          ./.build/release/ExampleStressApp --bench resolve --iterations 500 \
+            | tee bench.out
+          grep -q "resolve-all-keys" bench.out
