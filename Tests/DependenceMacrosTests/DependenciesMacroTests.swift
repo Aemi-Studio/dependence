@@ -5,7 +5,7 @@
 
 import DependenceMacrosPlugin
 import SwiftSyntaxMacros
-import SwiftSyntaxMacrosTestSupport
+import SwiftSyntaxMacrosGenericTestSupport
 import Testing
 
 @Suite("@Dependencies expansion")

@@ -300,7 +300,12 @@ let package = Package(
             name: "DependenceMacrosTests",
             dependencies: [
                 "DependenceMacrosPlugin",
-                .product(name: "SwiftSyntaxMacrosTestSupport", package: "swift-syntax"),
+                // The *generic* test support (not SwiftSyntaxMacrosTestSupport,
+                // whose assertions call into the XCTest bridge and emit
+                // one warning per assertion under Swift Testing). Failures
+                // are routed to Issue.record through the failure-handler
+                // variant — see MacroAssertions.swift.
+                .product(name: "SwiftSyntaxMacrosGenericTestSupport", package: "swift-syntax"),
             ],
             path: "Tests/DependenceMacrosTests",
             swiftSettings: .strict

@@ -32,6 +32,18 @@ extension DependencyEntryMacro: AccessorMacro {
                 Diagnostic(node: variable.bindingSpecifier, message: DependenceDiagnostic.dependencyEntryRequiresVar))
             return []
         }
+        // A computed property already has accessors; stamping generated ones
+        // on top used to surface as a bewildering redeclaration error inside
+        // the expansion.
+        if let accessorBlock = binding.accessorBlock {
+            context.diagnose(
+                Diagnostic(
+                    node: accessorBlock,
+                    message: DependenceDiagnostic.dependencyEntryComputedPropertyUnsupported
+                )
+            )
+            return []
+        }
 
         // Two forms:
         //
@@ -143,9 +155,28 @@ extension DependencyEntryMacro: PeerMacro {
             return []
         }
 
+        // Computed property: the accessor role already diagnosed it.
+        if binding.accessorBlock != nil {
+            return []
+        }
+
         guard let initializer = binding.initializer?.value.trimmedDescription else {
             // Interface-module form: no initializer, route through an
-            // externally-declared `<TypeName>Key`. No peer to generate.
+            // externally-declared `<TypeName>Key`. No peer to generate — and
+            // therefore nowhere to stamp `preview:`/`test:` expressions. The
+            // arguments used to be dropped silently; now they are an error
+            // pointing at the right fix (declare the witnesses on the
+            // external key).
+            if labeledArgument(named: "preview", in: node) != nil
+                || labeledArgument(named: "test", in: node) != nil
+            {
+                context.diagnose(
+                    Diagnostic(
+                        node: node,
+                        message: DependenceDiagnostic.dependencyEntryInterfaceFormDropsWitnesses
+                    )
+                )
+            }
             return []
         }
 

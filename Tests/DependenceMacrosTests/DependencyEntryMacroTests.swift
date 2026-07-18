@@ -5,7 +5,7 @@
 
 import DependenceMacrosPlugin
 import SwiftSyntaxMacros
-import SwiftSyntaxMacrosTestSupport
+import SwiftSyntaxMacrosGenericTestSupport
 import Testing
 
 @Suite("@DependencyEntry expansion")
@@ -25,8 +25,12 @@ struct DependencyEntryMacroTests {
             expandedSource: """
                 extension DependencyValues {
                     public var apiClient: APIClient {
-                        get { self[__Key_apiClient.self] }
-                        set { self[__Key_apiClient.self] = newValue }
+                        get {
+                            self[__Key_apiClient.self]
+                        }
+                        set {
+                            self[__Key_apiClient.self] = newValue
+                        }
                     }
 
                     fileprivate nonisolated enum __Key_apiClient: Dependence.DependencyKey {
@@ -52,8 +56,12 @@ struct DependencyEntryMacroTests {
             expandedSource: """
                 extension DependencyValues {
                     public var apiClient: APIClient {
-                        get { self[__Key_apiClient.self] }
-                        set { self[__Key_apiClient.self] = newValue }
+                        get {
+                            self[__Key_apiClient.self]
+                        }
+                        set {
+                            self[__Key_apiClient.self] = newValue
+                        }
                     }
 
                     fileprivate nonisolated enum __Key_apiClient: Dependence.DependencyKey {
@@ -82,8 +90,12 @@ struct DependencyEntryMacroTests {
             expandedSource: """
                 extension DependencyValues {
                     public var apiClient: APIClient {
-                        get { self[__Key_apiClient.self] }
-                        set { self[__Key_apiClient.self] = newValue }
+                        get {
+                            self[__Key_apiClient.self]
+                        }
+                        set {
+                            self[__Key_apiClient.self] = newValue
+                        }
                     }
 
                     fileprivate nonisolated enum __Key_apiClient: Dependence.DependencyKey {
@@ -113,8 +125,12 @@ struct DependencyEntryMacroTests {
             expandedSource: """
                 extension DependencyValues {
                     public var apiClient: APIClient {
-                        get { self[__Key_apiClient.self] }
-                        set { self[__Key_apiClient.self] = newValue }
+                        get {
+                            self[__Key_apiClient.self]
+                        }
+                        set {
+                            self[__Key_apiClient.self] = newValue
+                        }
                     }
 
                     fileprivate nonisolated enum __Key_apiClient: Dependence.DependencyKey {
