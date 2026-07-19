@@ -21,7 +21,7 @@ let package = Package(
         // one process-wide resolution cache, subtree stack, and issue-handler
         // registry. Static linking would duplicate that state per image and
         // silently split the container.
-        .library(name: "Dependence", type: .dynamic, targets: ["Dependence"]),
+        .library(name: "Dependence", targets: ["Dependence"]),
 
         // Optional ergonomic macros. Importing this product pulls in SwiftSyntax.
         .library(name: "DependenceMacros", targets: ["DependenceMacros"]),
