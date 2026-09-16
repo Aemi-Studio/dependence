@@ -2,12 +2,12 @@
 //  TaskPropagationTests.swift
 //  DependenceTests
 //
-//  Pins down `Task { … }`/`withTaskGroup` propagation. `@TaskLocal` values
+//  Pins down `Task { … }`/`withTaskGroup` propagation. Task-local values
 //  copy into structured children at task creation. `Task { … }` is
 //  unstructured but, per Swift Concurrency Evolution, it inherits the
 //  surrounding task's task-local values at construction. `Task.detached`
 //  does not. These tests prove the distinction is preserved by `Dependence`
-//  (which only ever binds `DependencyValues._current` via a `@TaskLocal`).
+//  (which only ever binds `DependencyValues._current` via native `TaskLocal` storage).
 //
 
 import Dependence

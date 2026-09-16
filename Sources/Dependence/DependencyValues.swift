@@ -146,16 +146,19 @@ public struct DependencyValues: Sendable {
     /// enclosing ``withDependencies(_:operation:)-(_,_)`` block or a fresh
     /// empty container that resolves against
     /// `liveValue`/`previewValue`/`testValue` based on context.
-    @TaskLocal
     @usableFromInline
-    static var _current: DependencyValues = .init()
+    static var _current: DependencyValues { currentStorage.get() }
+
+    // Explicit storage avoids malformed @usableFromInline expansion in Swift 6.4's @TaskLocal macro.
+    @usableFromInline
+    static let currentStorage = TaskLocal<DependencyValues>(wrappedValue: .init())
 
     /// Public accessor for the active container.
     ///
     /// Mirrors the resolution chain that ``Dependency`` uses for non-View
     /// hosts:
     ///
-    /// 1. The `@TaskLocal`-bound ``_current`` if it carries explicit
+    /// 1. The task-local ``_current`` if it carries explicit
     ///    overrides — i.e. a ``withDependencies(_:operation:)-(_,_)`` block
     ///    is in scope.
     /// 2. The top of the SwiftUI subtree stack if any subtree is active —
@@ -366,9 +369,8 @@ public struct DependencyValues: Sendable {
     /// Consulted **only** on the compute path (cache misses), so the hot
     /// cached-read path never reads the task-local. Tiny N — a plain array
     /// beats set hashing.
-    @TaskLocal
     @usableFromInline
-    static var _inFlightResolutions: [ResolutionFrame] = []
+    static let inFlightResolutions = TaskLocal<[ResolutionFrame]>(wrappedValue: [])
 
     /// Runs `compute` with `K` pushed onto the in-flight stack; traps with
     /// the full key chain when `K` is already being computed.
@@ -378,7 +380,7 @@ public struct DependencyValues: Sendable {
     /// the chain) followed by a clear `fatalError` beats both.
     @usableFromInline
     static func withCycleDetection<K, V>(_ keyType: K.Type, _ compute: () -> V) -> V {
-        let stack = _inFlightResolutions
+        let stack = inFlightResolutions.get()
         let id = ObjectIdentifier(K.self)
         let label = String(describing: K.self)
         if stack.contains(where: { $0.id == id }) {
@@ -392,7 +394,7 @@ public struct DependencyValues: Sendable {
         }
         var next = stack
         next.append(ResolutionFrame(id: id, label: label))
-        return $_inFlightResolutions.withValue(next) { compute() }
+        return inFlightResolutions.withValue(next) { compute() }
     }
 
     // MARK: - Test reset

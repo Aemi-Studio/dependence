@@ -43,7 +43,7 @@ public func withDependencies<R>(
     // a SwiftUI subtree composes instead of resetting unrelated keys.
     var copy = DependencyValues.resolveActive(environmentSnapshot: nil)
     try mutate(&copy)
-    return try DependencyValues.$_current.withValue(copy, operation: operation)
+    return try DependencyValues.currentStorage.withValue(copy, operation: operation)
 }
 
 // MARK: - Async overrides
@@ -62,7 +62,7 @@ public func withDependencies<R: Sendable>(
 ) async rethrows -> R {
     var copy = DependencyValues.resolveActive(environmentSnapshot: nil)
     try mutate(&copy)
-    return try await DependencyValues.$_current.withValue(copy, operation: operation)
+    return try await DependencyValues.currentStorage.withValue(copy, operation: operation)
 }
 
 // MARK: - Snapshot-at-construction helpers
@@ -117,7 +117,7 @@ public func withSnapshotDependencies<R>(
     _ snapshot: DependencyValues,
     operation: () throws -> R
 ) rethrows -> R {
-    try DependencyValues.$_current.withValue(snapshot, operation: operation)
+    try DependencyValues.currentStorage.withValue(snapshot, operation: operation)
 }
 
 /// Async form of ``withSnapshotDependencies(_:operation:)``.
@@ -127,7 +127,7 @@ public func withSnapshotDependencies<R: Sendable>(
     isolation: isolated (any Actor)? = #isolation,
     operation: () async throws -> R
 ) async rethrows -> R {
-    try await DependencyValues.$_current.withValue(snapshot, operation: operation)
+    try await DependencyValues.currentStorage.withValue(snapshot, operation: operation)
 }
 
 // MARK: - Snapshot for escaping closures
@@ -146,7 +146,7 @@ public struct DependencyContinuation: Sendable {
     /// Re-bind the captured dependencies for the duration of `operation`.
     @discardableResult
     public func yield<R>(operation: () throws -> R) rethrows -> R {
-        try DependencyValues.$_current.withValue(snapshot, operation: operation)
+        try DependencyValues.currentStorage.withValue(snapshot, operation: operation)
     }
 
     /// Re-bind asynchronously.
@@ -155,7 +155,7 @@ public struct DependencyContinuation: Sendable {
         isolation: isolated (any Actor)? = #isolation,
         operation: () async throws -> R
     ) async rethrows -> R {
-        try await DependencyValues.$_current.withValue(snapshot, operation: operation)
+        try await DependencyValues.currentStorage.withValue(snapshot, operation: operation)
     }
 }
 
@@ -196,7 +196,7 @@ extension DependencyContinuation {
     ) -> @Sendable (repeat each Argument) -> R {
         let snapshot = self.snapshot
         return { (argument: repeat each Argument) in
-            DependencyValues.$_current.withValue(snapshot) {
+            DependencyValues.currentStorage.withValue(snapshot) {
                 operation(repeat each argument)
             }
         }
@@ -208,7 +208,7 @@ extension DependencyContinuation {
     ) -> @Sendable (repeat each Argument) throws -> R {
         let snapshot = self.snapshot
         return { (argument: repeat each Argument) in
-            try DependencyValues.$_current.withValue(snapshot) {
+            try DependencyValues.currentStorage.withValue(snapshot) {
                 try operation(repeat each argument)
             }
         }
