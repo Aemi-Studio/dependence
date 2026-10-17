@@ -33,6 +33,11 @@ private struct ClientProperty {
     /// `false` when the member must be supplied at every call site (e.g. a
     /// typed-throws closure whose default cannot be synthesized).
     let hasSynthesizedDefault: Bool
+    /// Source text of the author's inline default (`var f: () -> Int = { 1 }`).
+    ///
+    /// When present it becomes the memberwise-init default instead of the
+    /// synthesized "unimplemented" closure.
+    var explicitDefault: String? = nil
 }
 
 /// Peels a (possibly optional, attributed, or parenthesized) closure type
@@ -149,9 +154,14 @@ extension DependencyClientMacro: MemberMacro {
             let isThrowing = throwsClause != nil
             let returnText = function.returnClause.type.trimmedDescription
             let isVoid = returnText == "Void" || returnText == "()"
+            // An inline default is the author's stated intent. Dropping it
+            // silently (as before) made `Client()` trap even though the
+            // source visibly supplied a working default.
+            let explicitDefault = binding.initializer?.value.trimmedDescription
 
             var hasSynthesizedDefault = true
-            if !isOptional, let thrownType = throwsClause?.type?.trimmedDescription,
+            if !isOptional, explicitDefault == nil,
+                let thrownType = throwsClause?.type?.trimmedDescription,
                 !synthesizableThrownTypes.contains(thrownType)
             {
                 // The synthesized default throws DependencyError.unimplemented,
@@ -169,7 +179,7 @@ extension DependencyClientMacro: MemberMacro {
                 )
                 hasSynthesizedDefault = false
             }
-            if !isOptional && !isThrowing && !isVoid {
+            if !isOptional && !isThrowing && !isVoid && explicitDefault == nil {
                 // Diagnose: the synthesized default has nowhere to route
                 // a recoverable failure — it must trap. Authors who want
                 // soft-fail behaviour should mark the closure `throws`.
@@ -192,7 +202,8 @@ extension DependencyClientMacro: MemberMacro {
                     isThrowing: isThrowing,
                     returnText: returnText,
                     parameterCount: function.parameters.count,
-                    hasSynthesizedDefault: hasSynthesizedDefault
+                    hasSynthesizedDefault: hasSynthesizedDefault,
+                    explicitDefault: explicitDefault
                 )
             )
         }
@@ -207,13 +218,16 @@ extension DependencyClientMacro: MemberMacro {
                 // would be rejected. The natural default is `nil` — "no
                 // handler installed" — mirroring memberwise-init behavior
                 // for optional stored properties.
-                return "\(property.name): \(typeText) = nil"
+                return "\(property.name): \(typeText) = \(property.explicitDefault ?? "nil")"
             }
             let escapingType: String
             if typeText.contains("@escaping") {
                 escapingType = typeText
             } else {
                 escapingType = "@escaping \(typeText)"
+            }
+            if let explicitDefault = property.explicitDefault {
+                return "\(property.name): \(escapingType) = \(explicitDefault)"
             }
             guard property.hasSynthesizedDefault else {
                 return "\(property.name): \(escapingType)"
@@ -246,9 +260,15 @@ extension DependencyClientMacro: MemberMacro {
             """
 
         if properties.allSatisfy({ $0.isClosure && $0.hasSynthesizedDefault }) {
+            // Members with an author default would make a bare `Self()` use
+            // that default, which is not "unimplemented": pass the reporting
+            // closures for those members explicitly.
+            let overridden = properties.filter { $0.explicitDefault != nil }
+            let arguments = overridden.map { "\($0.name): \(unimplementedClosureLiteral(for: $0))" }
+                .joined(separator: ", ")
             let unimplementedDecl: DeclSyntax =
                 """
-                \(raw: memberPrefix)static var unimplemented: Self { Self() }
+                \(raw: memberPrefix)static var unimplemented: Self { Self(\(raw: arguments)) }
                 """
             return [initDecl, unimplementedDecl]
         }

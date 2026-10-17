@@ -18,6 +18,75 @@ struct DependencyClientEdgeCaseTests {
         "DependencyClient": DependencyClientMacro.self
     ]
 
+    @Test("an inline default is honored instead of silently replaced by the trapping closure")
+    func inlineDefaultIsHonored() {
+        assertMacroExpansion(
+            """
+            @DependencyClient
+            struct Client: Sendable {
+                var snapshot: @Sendable () async -> Int = { 42 }
+            }
+            """,
+            expandedSource: """
+                struct Client: Sendable {
+                    var snapshot: @Sendable () async -> Int = { 42 }
+
+                    nonisolated init(snapshot: @escaping @Sendable () async -> Int = {
+                            42
+                        }) {
+                        self.snapshot = snapshot
+                    }
+
+                    nonisolated static var unimplemented: Self {
+                        Self(snapshot: {
+                                Dependence.reportIssue("unimplemented: snapshot");
+                                fatalError("unimplemented closure 'snapshot' returns Int; mark it 'throws' to surface as a test failure instead")
+                            })
+                    }
+                }
+                """,
+            diagnostics: [],
+            macros: macros
+        )
+    }
+
+    @Test("members without a default keep the synthesized closure next to one with an inline default")
+    func mixedInlineAndSynthesizedDefaults() {
+        assertMacroExpansion(
+            """
+            @DependencyClient
+            struct Client: Sendable {
+                var fetch: @Sendable () async throws -> Int = { 7 }
+                var ping: @Sendable () -> Void
+            }
+            """,
+            expandedSource: """
+                struct Client: Sendable {
+                    var fetch: @Sendable () async throws -> Int = { 7 }
+                    var ping: @Sendable () -> Void
+
+                    nonisolated init(fetch: @escaping @Sendable () async throws -> Int = {
+                            7
+                        }, ping: @escaping @Sendable () -> Void = {
+                            Dependence.reportIssue("unimplemented: ping")
+                        }) {
+                        self.fetch = fetch
+                        self.ping = ping
+                    }
+
+                    nonisolated static var unimplemented: Self {
+                        Self(fetch: {
+                                Dependence.reportIssue("unimplemented: fetch");
+                                throw Dependence.DependencyError.unimplemented("fetch")
+                            })
+                    }
+                }
+                """,
+            diagnostics: [],
+            macros: macros
+        )
+    }
+
     @Test("let without an initializer is a clear diagnostic, not an opaque init failure")
     func letWithoutInitializerDiagnoses() {
         assertMacroExpansion(
