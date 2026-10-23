@@ -29,7 +29,7 @@ jobs:
     name: swift-format (strict)
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Lint
         run: |
           xcrun swift format lint --strict --configuration .swift-format \
@@ -39,11 +39,11 @@ jobs:
     name: build + test (SwiftBuild backend)
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Toolchain
         run: swift --version
       - name: Cache SwiftPM dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .build/checkouts
           key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
@@ -59,9 +59,9 @@ jobs:
     name: build + test (native backend)
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Cache SwiftPM dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .build/checkouts
           key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
@@ -74,9 +74,9 @@ jobs:
     name: example executables build
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Cache SwiftPM dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .build/checkouts
           key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
@@ -94,9 +94,9 @@ jobs:
     name: bench harness smoke
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Cache SwiftPM dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .build/checkouts
           key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
